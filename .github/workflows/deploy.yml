@@ -59,7 +59,7 @@ jobs:
           test -n "$SECRET_EFFECTS_BOOTSTRAP_TOKEN" || { echo "Set SECRET_EFFECTS_BOOTSTRAP_TOKEN in the production environment." >&2; exit 1; }
 
       - name: Deploy with Alchemy
-        run: pnpm deploy
+        run: pnpm run deploy
 
       - name: Verify the deployment
         if: env.SECRET_EFFECTS_API_URL != ''

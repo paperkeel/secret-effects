@@ -8,7 +8,7 @@
 - Run all checks with `pnpm check`.
 - Format files with `pnpm format`.
 - Plan production infrastructure with `pnpm infra:plan`.
-- Deploy production infrastructure with `pnpm deploy`.
+- Deploy production infrastructure with `pnpm run deploy`.
 
 ## Rules
 

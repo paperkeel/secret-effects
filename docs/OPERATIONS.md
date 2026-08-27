@@ -21,7 +21,7 @@ production environment secrets.
 pnpm install --frozen-lockfile
 pnpm check
 pnpm infra:plan
-pnpm deploy
+pnpm run deploy
 ```
 
 Alchemy owns D1, R2, Queue, Worker, cache, and Durable Object bindings. Production
