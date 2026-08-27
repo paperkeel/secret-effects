@@ -12,7 +12,8 @@
 
 ## Rules
 
-- Never commit a credential, private key, secret value, environment file, or Alchemy state.
+- Never commit a credential, private key, secret value, environment file, or
+  Alchemy state.
 - Never log a credential, private key, decrypted bundle, or secret value.
 - Cache only encrypted bundles.
 - Keep decrypted values in request-local memory.
@@ -29,3 +30,12 @@
 - Fix failures that the pull request causes.
 - Review and resolve valid CodeRabbit feedback.
 - Add a comment that starts with `#AI-Automation` and lists automated fixes.
+
+## Semark Protocol
+
+Load `semark-protocol` before you add or change TypeScript comments. Do not add
+or keep source comments except Semark file signatures, method signatures, and
+approved directives. Update an affected signature in the same change as the
+documented behavior. All applicable TypeScript files in the root, `apps/*`, and
+`packages/*` comply. Declaration-only `.d.ts` files use the protocol default
+exclusion. Run `pnpm semark:check` before you complete a change.

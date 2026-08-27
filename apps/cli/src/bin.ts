@@ -1,3 +1,11 @@
+/**
+ * Implements the noninteractive Secret Effects command interface.
+ *
+ * @remarks
+ * Responsibility: Owns command dispatch, local credential construction, encrypted bundle publication, and service request output.
+ *
+ * Boundary: Accepts command arguments and local credential material. It delegates protocol, configuration, and cryptographic operations.
+ */
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import {
@@ -39,14 +47,26 @@ const program = Effect.tryPromise({
 void Effect.runPromise(
 	program.pipe(
 		Effect.catch((error) =>
-			Effect.sync(() => {
-				process.stderr.write(`secreteffects: ${error.message}\n`);
-				process.exitCode = 1;
-			}),
+			Effect.sync(
+				/**
+				 * Reports a failed command and sets the process exit status.
+				 */
+				() => {
+					process.stderr.write(`secreteffects: ${error.message}\n`);
+					process.exitCode = 1;
+				},
+			),
 		),
 	),
 );
 
+/**
+ * Dispatches one command-line invocation.
+ *
+ * @param argv - The complete command arguments after the executable name.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function main(argv: readonly string[]): Promise<void> {
 	const [group, command] = argv;
 	if (
@@ -135,9 +155,15 @@ async function main(argv: readonly string[]): Promise<void> {
 	});
 }
 
+/**
+ * Issues the first Global credential after global admin token authentication.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function bootstrap(args: readonly string[]): Promise<void> {
 	const api = requiredOption(args, "--api");
-	const bootstrapToken = requiredEnv("SECRET_EFFECTS_BOOTSTRAP_TOKEN");
+	const globalAdminToken = requiredEnv("SECRET_EFFECTS_GLOBAL_ADMIN_TOKEN");
 	const masterKey = generateMasterKey();
 	const keys = deriveKeys(masterKey);
 	const issue: CredentialIssueRequest = {
@@ -151,7 +177,7 @@ async function bootstrap(args: readonly string[]): Promise<void> {
 	const response = await fetch(`${stripTrailingSlash(api)}/v1/bootstrap`, {
 		method: "POST",
 		headers: {
-			authorization: `Bearer ${bootstrapToken}`,
+			authorization: `Bearer ${globalAdminToken}`,
 			"content-type": "application/json",
 		},
 		body: JSON.stringify(issue),
@@ -166,6 +192,13 @@ async function bootstrap(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Issues and prints a subordinate credential through the service.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function issueKey(args: readonly string[]): Promise<void> {
 	const parent = await configuredCredential();
 	const type = requiredOption(args, "--type") as CredentialType;
@@ -203,6 +236,12 @@ async function issueKey(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Revokes one credential through the service.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function revokeKey(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const identifier = requiredOption(args, "--id");
@@ -215,6 +254,12 @@ async function revokeKey(args: readonly string[]): Promise<void> {
 	writeJson(await readJson(response));
 }
 
+/**
+ * Creates one project with its default environments.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function createProject(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const name = requiredOption(args, "--name");
@@ -228,6 +273,12 @@ async function createProject(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Creates one named environment within a project.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function createEnvironment(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project = requiredOption(args, "--project");
@@ -242,6 +293,13 @@ async function createEnvironment(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Lists environments for the selected project.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function listEnvironments(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project =
@@ -252,6 +310,13 @@ async function listEnvironments(args: readonly string[]): Promise<void> {
 	await listPath(`/v1/projects/${project}/environments`, credential);
 }
 
+/**
+ * Computes and publishes one repository schema manifest.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function publishSchema(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project =
@@ -275,6 +340,13 @@ async function publishSchema(args: readonly string[]): Promise<void> {
 	writeJson(await readJson(response));
 }
 
+/**
+ * Lists registered schema digests for one project.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function listSchemas(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project =
@@ -285,6 +357,13 @@ async function listSchemas(args: readonly string[]): Promise<void> {
 	await listPath(`/v1/projects/${project}/schemas`, credential);
 }
 
+/**
+ * Encrypts and publishes one environment bundle.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function publishBundle(args: readonly string[]): Promise<void> {
 	const author = await configuredCredential();
 	if (author.payload.type !== "project" || author.payload.project === null) {
@@ -332,12 +411,23 @@ async function publishBundle(args: readonly string[]): Promise<void> {
 		});
 	}
 	const values = Object.fromEntries(
-		Object.entries(rawValues).map(([key, value]) => {
-			if (typeof value !== "string") {
-				throw new CliError({ message: `${key} must contain a string value.` });
-			}
-			return [key, value];
-		}),
+		Object.entries(rawValues).map(
+			/**
+			 * Validates and returns one plaintext secret entry.
+			 *
+			 * @param entry - The raw secret name and JSON value pair.
+			 * @returns The validated key and string value entry.
+			 * @throws {@link CliError} When command input or a service response violates a command boundary.
+			 */
+			([key, value]) => {
+				if (typeof value !== "string") {
+					throw new CliError({
+						message: `${key} must contain a string value.`,
+					});
+				}
+				return [key, value];
+			},
+		),
 	);
 	const bundle = await sealBundle({
 		project: author.payload.project,
@@ -362,6 +452,13 @@ async function publishBundle(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Reads, decrypts, and prints one environment bundle.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function readEnvironment(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project = credential.payload.project;
@@ -383,6 +480,13 @@ async function readEnvironment(args: readonly string[]): Promise<void> {
 	process.stdout.write(`${JSON.stringify(values, null, 2)}\n`);
 }
 
+/**
+ * Purges one environment cache tag when cache access exists.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the command prints the purge result.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function purgeCache(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project =
@@ -406,6 +510,12 @@ async function purgeCache(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Prints audit events for the selected scope.
+ *
+ * @param args - The command arguments for this operation.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function listAudit(args: readonly string[]): Promise<void> {
 	const credential = await configuredCredential();
 	const project = option(args, "--project") ?? credential.payload.project;
@@ -415,6 +525,13 @@ async function listAudit(args: readonly string[]): Promise<void> {
 	);
 }
 
+/**
+ * Reads and prints one authenticated JSON endpoint.
+ *
+ * @param path - The request path or local file path for the operation.
+ * @param credential - The credential that authenticates or decrypts the operation.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function listPath(
 	path: string,
 	credential?: Awaited<ReturnType<typeof parseCredential>>,
@@ -426,10 +543,22 @@ async function listPath(
 	writeJson(await readJson(response));
 }
 
+/**
+ * Writes a value as formatted JSON.
+ *
+ * @param value - The command result to serialize as JSON.
+ */
 function writeJson(value: unknown): void {
 	process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/**
+ * Validates a parsed public credential descriptor.
+ *
+ * @param value - The parsed JSON value to validate as a public descriptor.
+ * @returns The validated public credential descriptor.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 function parsePublicDescriptor(value: unknown): CredentialIssueResponse {
 	if (
 		typeof value !== "object" ||
@@ -444,6 +573,14 @@ function parsePublicDescriptor(value: unknown): CredentialIssueResponse {
 	return { payload: value.payload, signature: value.signature };
 }
 
+/**
+ * Sends one signed service request with an optional JSON body.
+ *
+ * @param credential - The credential that authenticates or decrypts the operation.
+ * @param path - The request path or local file path for the operation.
+ * @param init - The HTTP method and optional serialized body.
+ * @returns The service response.
+ */
 async function authenticatedFetch(
 	credential: Awaited<ReturnType<typeof parseCredential>>,
 	path: string,
@@ -461,10 +598,20 @@ async function authenticatedFetch(
 	});
 }
 
+/**
+ * Parses the credential from the process environment.
+ *
+ * @returns The parsed active credential.
+ */
 async function configuredCredential() {
 	return parseCredential(requiredEnv("SECRET_EFFECTS_KEY"));
 }
 
+/**
+ * Writes a credential and its recovery warning.
+ *
+ * @param value - The complete rendered credential to write.
+ */
 function writeCredential(value: string): void {
 	process.stdout.write(`${value}\n`);
 	process.stderr.write(
@@ -472,6 +619,14 @@ function writeCredential(value: string): void {
 	);
 }
 
+/**
+ * Reads and validates one JSON service response.
+ *
+ * @typeParam Value - The expected parsed response type.
+ * @param response - The service response to read and validate.
+ * @returns The parsed response value.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function readJson<Value = unknown>(response: Response): Promise<Value> {
 	const text = await response.text();
 	let value: unknown;
@@ -498,11 +653,24 @@ async function readJson<Value = unknown>(response: Response): Promise<Value> {
 	return value as Value;
 }
 
+/**
+ * Reads one UTF-8 text file.
+ *
+ * @param path - The request path or local file path for the operation.
+ * @returns The UTF-8 file contents.
+ */
 async function readTextFile(path: string): Promise<string> {
 	const { readFile } = await import("node:fs/promises");
 	return readFile(path, "utf8");
 }
 
+/**
+ * Reads one required process environment value.
+ *
+ * @param name - The environment, option, header, or variable name for the operation.
+ * @returns The configured environment value.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 function requiredEnv(name: string): string {
 	const value = process.env[name];
 	if (value === undefined || value.length === 0) {
@@ -511,11 +679,25 @@ function requiredEnv(name: string): string {
 	return value;
 }
 
+/**
+ * Reads the first value for one command option.
+ *
+ * @param args - The command arguments for this operation.
+ * @param name - The environment, option, header, or variable name for the operation.
+ * @returns The option value, or undefined when the option is absent.
+ */
 function option(args: readonly string[], name: string): string | undefined {
 	const index = args.indexOf(name);
 	return index === -1 ? undefined : args[index + 1];
 }
 
+/**
+ * Reads all values for one repeatable command option.
+ *
+ * @param args - The command arguments for this operation.
+ * @param name - The environment, option, header, or variable name for the operation.
+ * @returns All values supplied for the option.
+ */
 function options(args: readonly string[], name: string): string[] {
 	return args.flatMap((value, index) =>
 		value === name && args[index + 1] !== undefined
@@ -524,6 +706,14 @@ function options(args: readonly string[], name: string): string[] {
 	);
 }
 
+/**
+ * Reads one required command option.
+ *
+ * @param args - The command arguments for this operation.
+ * @param name - The environment, option, header, or variable name for the operation.
+ * @returns The required option value.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 function requiredOption(args: readonly string[], name: string): string {
 	const value = option(args, name);
 	if (value === undefined || value.length === 0) {
@@ -532,10 +722,19 @@ function requiredOption(args: readonly string[], name: string): string {
 	return value;
 }
 
+/**
+ * Removes one trailing slash from a URL string.
+ *
+ * @param value - The URL text that can contain one trailing slash.
+ * @returns The URL string without one trailing slash.
+ */
 function stripTrailingSlash(value: string): string {
 	return value.replace(/\/$/, "");
 }
 
+/**
+ * Writes command usage to standard output.
+ */
 function printHelp(): void {
 	process.stdout.write(`Secret Effects\n\n`);
 	process.stdout.write(`Usage: secreteffects <command>\n\n`);

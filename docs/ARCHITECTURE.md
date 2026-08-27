@@ -19,9 +19,9 @@ upload.
 | Agent       | service management      | no              | none                               |
 | Environment | one project environment | one environment | none                               |
 
-Bootstrap creates the only Global credential. The bootstrap endpoint becomes
-unusable after that operation. The API does not permit Global credential
-rotation or revocation.
+The global admin token authorizes the bootstrap request. Bootstrap creates the
+only Global credential. The bootstrap endpoint becomes unusable after that
+operation. The API does not permit Global credential rotation or revocation.
 
 Each credential has this form:
 

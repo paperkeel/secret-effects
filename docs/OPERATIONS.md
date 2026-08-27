@@ -9,15 +9,33 @@ Production deployment needs these values:
 | `CLOUDFLARE_ACCOUNT_ID`             | Selects the Cloudflare account         |
 | `CLOUDFLARE_API_TOKEN`              | Manages the Alchemy resources          |
 | `SECRET_EFFECTS_ISSUER_PRIVATE_KEY` | Signs credential descriptors           |
-| `SECRET_EFFECTS_BOOTSTRAP_TOKEN`    | Authorizes the first Global credential |
+| `SECRET_EFFECTS_GLOBAL_ADMIN_TOKEN` | Authorizes the first Global credential |
 | `SECRET_EFFECTS_API_URL`            | Pins the signed production API origin  |
+| `SENTRY_DSN`                        | Enables optional Sentry error reports  |
 
 Generate the issuer key as 32 random bytes and lowercase hexadecimal. Generate
-the bootstrap token with at least 32 random bytes. Store both as GitHub
-production environment secrets.
+the global admin token with at least 32 random bytes. Store both as GitHub
+production environment secrets. Use the global admin token only for bootstrap.
 
 Store `SECRET_EFFECTS_API_URL` as a GitHub production environment variable.
-The URL must use HTTPS.
+The URL must use HTTPS. Store `SENTRY_DSN` as a production environment secret
+only when the deployment uses Sentry.
+
+Create the Cloudflare API token with these account permissions:
+
+- `Account / Workers Scripts / Edit`
+- `Account / D1 / Edit`
+- `Account / Workers R2 Storage / Edit`
+- `Account / Queues / Edit`
+- `Account / Account Settings / Read`
+
+Limit the token to the target account. Do not add zone permissions. The default
+deployment uses a `workers.dev` origin.
+
+The Sentry runtime integration needs only `SENTRY_DSN`. Sentry organization and
+project slugs apply to source-map uploads. This deployment does not upload
+source maps and does not need `SENTRY_ORG`, `SENTRY_PROJECT`, or
+`SENTRY_AUTH_TOKEN`.
 
 ## Deploy
 
@@ -39,11 +57,11 @@ Build the command interface first.
 pnpm build
 ```
 
-Set the temporary bootstrap token. Send the only bootstrap request.
+Set the global admin token. Send the only bootstrap request.
 
 ```sh
 umask 077
-SECRET_EFFECTS_BOOTSTRAP_TOKEN='<token>' \
+SECRET_EFFECTS_GLOBAL_ADMIN_TOKEN='<token>' \
   node apps/cli/dist/secreteffects.js bootstrap \
   --api https://<worker-host> > global.secret-effects-key
 chmod 600 global.secret-effects-key

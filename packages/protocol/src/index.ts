@@ -1,3 +1,11 @@
+/**
+ * Defines shared Secret Effects wire schemas and canonical names.
+ *
+ * @remarks
+ * Responsibility: Owns protocol constants, Effect schemas, canonical JSON encoding, cache tags, object keys, and request decoders.
+ *
+ * Boundary: Validates structural protocol data. It does not authenticate requests, persist records, or encrypt bundles.
+ */
 import * as Schema from "effect/Schema";
 
 export const CREDENTIAL_PREFIX = "secret_effects_v1";
@@ -119,6 +127,13 @@ export const PurgeMessage = Schema.Struct({
 });
 export type PurgeMessage = typeof PurgeMessage.Type;
 
+/**
+ * Rejects a value that is not a valid machine name.
+ *
+ * @param value - The machine name to validate.
+ * @param label - The human-readable name for validation errors.
+ * @throws {@link Error} When the input cannot satisfy the protocol boundary.
+ */
 export function assertMachineName(value: string, label: string): void {
 	if (!MACHINE_NAME_PATTERN.test(value)) {
 		throw new Error(
@@ -127,10 +142,24 @@ export function assertMachineName(value: string, label: string): void {
 	}
 }
 
+/**
+ * Serializes a supported value as canonical JSON text.
+ *
+ * @param value - The supported value to serialize.
+ * @returns The canonical JSON text.
+ */
 export function canonicalJson(value: unknown): string {
 	return canonicalJsonValue(value, new Set<object>());
 }
 
+/**
+ * Serializes one supported value while tracking ancestor objects.
+ *
+ * @param value - The current supported value to serialize.
+ * @param ancestors - The active object ancestry used to detect cycles.
+ * @returns The canonical JSON fragment.
+ * @throws {@link Error} When the input cannot satisfy the protocol boundary.
+ */
 function canonicalJsonValue(value: unknown, ancestors: Set<object>): string {
 	if (value === null) {
 		return "null";
@@ -172,6 +201,13 @@ function canonicalJsonValue(value: unknown, ancestors: Set<object>): string {
 	}
 }
 
+/**
+ * Builds the cache tag for one project environment.
+ *
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @returns The stable environment cache tag.
+ */
 export function environmentCacheTag(
 	project: string,
 	environment: string,
@@ -179,6 +215,12 @@ export function environmentCacheTag(
 	return `se-${project}-${environment}`;
 }
 
+/**
+ * Builds the immutable object key for an encrypted bundle version.
+ *
+ * @param bundle - The encrypted bundle or test draft for the operation.
+ * @returns The immutable R2 object key.
+ */
 export function bundleObjectKey(bundle: SealedBundle): string {
 	return [
 		"bundles",
@@ -189,40 +231,82 @@ export function bundleObjectKey(bundle: SealedBundle): string {
 	].join("/");
 }
 
+/**
+ * Decodes and validates a credential issue request.
+ *
+ * @param value - The unknown credential issue request data.
+ * @returns The validated credential issue request.
+ */
 export function decodeCredentialIssueRequest(
 	value: unknown,
 ): CredentialIssueRequest {
 	return Schema.decodeUnknownSync(CredentialIssueRequest)(value);
 }
 
+/**
+ * Decodes and validates an encrypted bundle publication request.
+ *
+ * @param value - The unknown bundle publication request data.
+ * @returns The validated bundle publication request.
+ */
 export function decodePublishBundleRequest(
 	value: unknown,
 ): PublishBundleRequest {
 	return Schema.decodeUnknownSync(PublishBundleRequest)(value);
 }
 
+/**
+ * Decodes and validates a project creation request.
+ *
+ * @param value - The unknown project creation request data.
+ * @returns The validated project creation request.
+ */
 export function decodeProjectCreateRequest(
 	value: unknown,
 ): ProjectCreateRequest {
 	return Schema.decodeUnknownSync(ProjectCreateRequest)(value);
 }
 
+/**
+ * Decodes and validates an environment creation request.
+ *
+ * @param value - The unknown environment creation request data.
+ * @returns The validated environment creation request.
+ */
 export function decodeEnvironmentCreateRequest(
 	value: unknown,
 ): EnvironmentCreateRequest {
 	return Schema.decodeUnknownSync(EnvironmentCreateRequest)(value);
 }
 
+/**
+ * Decodes and validates a cache purge message.
+ *
+ * @param value - The unknown cache purge message data.
+ * @returns The validated cache purge message.
+ */
 export function decodePurgeMessage(value: unknown): PurgeMessage {
 	return Schema.decodeUnknownSync(PurgeMessage)(value);
 }
 
+/**
+ * Decodes and validates a credential revocation request.
+ *
+ * @param value - The unknown credential revocation request data.
+ * @returns The validated credential revocation request.
+ */
 export function decodeCredentialRevokeRequest(
 	value: unknown,
 ): CredentialRevokeRequest {
 	return Schema.decodeUnknownSync(CredentialRevokeRequest)(value);
 }
 
+/**
+ * Decodes and validates a schema manifest request.
+ *
+ * @param value - The unknown schema manifest request data.
+ * @returns The validated schema manifest request.
+ */
 export function decodeSchemaManifestRequest(
 	value: unknown,
 ): SchemaManifestRequest {
