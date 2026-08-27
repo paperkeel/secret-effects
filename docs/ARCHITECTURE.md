@@ -11,17 +11,18 @@ upload.
 
 ## Credential hierarchy
 
-| Type        | Scope                   | Read values     | Create or revoke                   |
-| ----------- | ----------------------- | --------------- | ---------------------------------- |
-| Global      | service                 | no              | CI/CD, Project, Agent, Environment |
-| CI/CD       | service                 | no              | Project, Agent, Environment        |
-| Project     | one project             | project bundles | Environment                        |
-| Agent       | service management      | no              | none                               |
-| Environment | one project environment | one environment | none                               |
+| Type        | Scope                   | Read values     | Create or revoke                           |
+| ----------- | ----------------------- | --------------- | ------------------------------------------ |
+| Global      | service                 | no              | Global, CI/CD, Project, Agent, Environment |
+| CI/CD       | service                 | no              | Project, Agent, Environment                |
+| Project     | one project             | project bundles | Environment                                |
+| Agent       | service management      | no              | none                                       |
+| Environment | one project environment | one environment | none                                       |
 
 The global admin token authorizes the bootstrap request. Bootstrap creates the
-only Global credential. The bootstrap endpoint becomes unusable after that
-operation. The API does not permit Global credential rotation or revocation.
+only active Global credential. A Global credential can revoke itself. The
+operator rotates the Global credential by revoking it and running bootstrap
+again with the global admin token.
 
 Each credential has this form:
 

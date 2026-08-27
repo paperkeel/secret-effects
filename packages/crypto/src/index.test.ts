@@ -2,7 +2,7 @@
  * Tests credential integrity and encrypted environment bundle boundaries.
  *
  * @remarks
- * Responsibility: Owns regression coverage for credential tampering, recipient access, signatures, and wrapped-key context.
+ * Responsibility: Owns regression coverage for credential tampering, issuer pinning, recipient access, signatures, and wrapped-key context.
  *
  * Boundary: Uses deterministic issuer keys and generated test credentials. It does not persist secret material.
  */
@@ -22,12 +22,18 @@ import {
 	bytesToHex,
 	deriveKeys,
 	encodeCredentialPayload,
+	exportPublicCredential,
 	generateMasterKey,
 	openBundle,
 	parseCredential,
+	parsePublicCredential,
 	sealBundle,
 	signPayload,
 } from "./index.ts";
+
+const TEST_ISSUER_PUBLIC_KEY = bytesToHex(
+	ed25519.getPublicKey(new Uint8Array(32).fill(7)),
+);
 
 describe("Secret Effects credentials", credentialTests);
 describe("encrypted environment bundles", bundleTests);
@@ -45,6 +51,14 @@ function credentialTests() {
 	it(
 		"rejects a changed signature after a valid checksum",
 		rejectsChangedSignature,
+	);
+	it(
+		"rejects a credential whose issuer key is not the pinned trust anchor",
+		rejectsUnpinnedIssuer,
+	);
+	it(
+		"rejects a public descriptor whose issuer key is not the pinned trust anchor",
+		rejectsUnpinnedPublicDescriptor,
 	);
 }
 
@@ -65,7 +79,9 @@ function roundTripsBase64Url() {
  */
 async function roundTripsCredential() {
 	const rendered = await issueTestCredential("environment", "demo", "dev");
-	const parsed = await parseCredential(rendered);
+	const parsed = await parseCredential(rendered, {
+		issuerPublicKey: TEST_ISSUER_PUBLIC_KEY,
+	});
 
 	expect(parsed.payload.type).toBe("environment");
 	expect(parsed.payload.project).toBe("demo");
@@ -83,7 +99,9 @@ async function rejectsChangedCredential() {
 	const index = rendered.lastIndexOf("_key:") + "_key:".length;
 	const changed = `${rendered.slice(0, index)}${rendered[index] === "0" ? "1" : "0"}${rendered.slice(index + 1)}`;
 
-	await expect(parseCredential(changed)).rejects.toThrow("checksum is invalid");
+	await expect(
+		parseCredential(changed, { issuerPublicKey: TEST_ISSUER_PUBLIC_KEY }),
+	).rejects.toThrow("checksum is invalid");
 }
 
 /**
@@ -106,9 +124,41 @@ async function rejectsChangedSignature() {
 	).slice(0, 32);
 	const changed = `${prefix}${changedSignature}_checksum:${checksum}_key:${key}`;
 
-	await expect(parseCredential(changed)).rejects.toThrow(
-		"signature is invalid",
+	await expect(
+		parseCredential(changed, { issuerPublicKey: TEST_ISSUER_PUBLIC_KEY }),
+	).rejects.toThrow("signature is invalid");
+}
+
+/**
+ * Tests issuer-key pinning against a self-signed credential with a foreign trust anchor.
+ */
+async function rejectsUnpinnedIssuer() {
+	const rendered = await issueTestCredential("environment", "demo", "dev");
+
+	await expect(
+		parseCredential(rendered, { issuerPublicKey: "e".repeat(64) }),
+	).rejects.toThrow("issuer key does not match the pinned trust anchor");
+}
+
+/**
+ * Tests issuer-key pinning for a self-consistent public credential descriptor.
+ */
+async function rejectsUnpinnedPublicDescriptor() {
+	const descriptor = exportPublicCredential(
+		await parseCredential(
+			await issueTestCredential("environment", "demo", "dev"),
+			{
+				issuerPublicKey: TEST_ISSUER_PUBLIC_KEY,
+			},
+		),
 	);
+
+	await expect(
+		parsePublicCredential(descriptor, { issuerPublicKey: "e".repeat(64) }),
+	).rejects.toThrow("issuer key does not match the pinned trust anchor");
+	await expect(parsePublicCredential(descriptor)).resolves.toMatchObject({
+		payload: { project: "demo" },
+	});
 }
 
 /**
@@ -131,12 +181,15 @@ function bundleTests() {
 async function decryptsForIncludedRecipient() {
 	const author = await parseCredential(
 		await issueTestCredential("project", "demo", null),
+		{ issuerPublicKey: TEST_ISSUER_PUBLIC_KEY },
 	);
 	const runtime = await parseCredential(
 		await issueTestCredential("environment", "demo", "production"),
+		{ issuerPublicKey: TEST_ISSUER_PUBLIC_KEY },
 	);
 	const excluded = await parseCredential(
 		await issueTestCredential("environment", "demo", "production"),
+		{ issuerPublicKey: TEST_ISSUER_PUBLIC_KEY },
 	);
 	const draft = await sealBundle({
 		project: "demo",
@@ -164,12 +217,15 @@ async function decryptsForIncludedRecipient() {
 async function bindsSignedContext() {
 	const author = await parseCredential(
 		await issueTestCredential("project", "demo", null),
+		{ issuerPublicKey: TEST_ISSUER_PUBLIC_KEY },
 	);
 	const runtime = await parseCredential(
 		await issueTestCredential("environment", "demo", "production"),
+		{ issuerPublicKey: TEST_ISSUER_PUBLIC_KEY },
 	);
 	const other = await parseCredential(
 		await issueTestCredential("environment", "demo", "production"),
+		{ issuerPublicKey: TEST_ISSUER_PUBLIC_KEY },
 	);
 	const accepted = acceptTestBundle(
 		await sealBundle({

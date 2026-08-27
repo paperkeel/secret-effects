@@ -2,7 +2,7 @@
  * Loads one validated environment from Secret Effects and local runtime values.
  *
  * @remarks
- * Responsibility: Owns credential selection, bounded bundle retrieval, scope validation, decryption, source merging, and T3 environment validation.
+ * Responsibility: Owns credential selection, issuer pinning, bounded bundle retrieval, scope validation, decryption, source merging, and T3 environment validation.
  *
  * Boundary: Accepts a repository configuration and runtime bindings. It does not publish, persist, cache, log, or expose secret values.
  */
@@ -137,9 +137,9 @@ async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 	);
 	const rendered = readCredential(options.credential, runtimeEnv);
 	rejectSourceConflicts(config, runtimeEnv);
-	let credential;
+	let candidate;
 	try {
-		credential = await parseCredential(rendered);
+		candidate = await parseCredential(rendered);
 	} catch {
 		throw clientError(
 			"CREDENTIAL",
@@ -147,24 +147,24 @@ async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 		);
 	}
 	if (
-		credential.payload.type !== "environment" &&
-		credential.payload.type !== "project"
+		candidate.payload.type !== "environment" &&
+		candidate.payload.type !== "project"
 	) {
 		throw clientError(
 			"CREDENTIAL",
 			"The client requires an Environment or Project credential.",
 		);
 	}
-	if (credential.payload.project !== config.project) {
+	if (candidate.payload.project !== config.project) {
 		throw clientError(
 			"SCOPE",
 			"The credential project does not match the client configuration.",
 		);
 	}
 	if (
-		credential.payload.environment !== null &&
+		candidate.payload.environment !== null &&
 		options.environment !== undefined &&
-		credential.payload.environment !== options.environment
+		candidate.payload.environment !== options.environment
 	) {
 		throw clientError(
 			"SCOPE",
@@ -172,7 +172,7 @@ async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 		);
 	}
 	const environment =
-		credential.payload.environment ?? options.environment ?? null;
+		candidate.payload.environment ?? options.environment ?? null;
 	if (environment === null) {
 		throw clientError(
 			"SCOPE",
@@ -190,10 +190,24 @@ async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 			"The client configuration does not declare the credential environment.",
 		);
 	}
-	const api = validateApiOrigin(credential.payload.api);
+	const api = validateApiOrigin(candidate.payload.api);
 	const path = `/v1/projects/${formatPathSegment(config.project)}/environments/${formatPathSegment(environment)}/bundle`;
 	const timeoutMs = validateTimeout(options.timeoutMs);
 	const signal = AbortSignal.timeout(timeoutMs);
+	const request = options.fetch ?? globalThis.fetch;
+	const wellKnown = await fetchServiceWellKnown(api.origin, request, signal);
+	let credential;
+	try {
+		credential = await parseCredential(rendered, {
+			issuerPublicKey: wellKnown.issuerPublicKey,
+			apiOrigin: api.origin,
+		});
+	} catch {
+		throw clientError(
+			"CREDENTIAL",
+			"The Secret Effects credential does not match the service issuer.",
+		);
+	}
 	let response: Response;
 	try {
 		const headers = await signRequest(
@@ -202,7 +216,6 @@ async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 			path,
 			new Uint8Array(),
 		);
-		const request = options.fetch ?? globalThis.fetch;
 		response = await request(`${api.origin}${path}`, { headers, signal });
 	} catch {
 		throw clientError("REQUEST", "The Secret Effects request failed.");
@@ -362,6 +375,67 @@ function validateApiOrigin(value: string): URL {
 		);
 	}
 	return api;
+}
+
+interface ServiceWellKnown {
+	issuerPublicKey: string;
+}
+
+/**
+ * Fetches and validates the issuer record from one service origin.
+ *
+ * @param apiOrigin - The HTTPS service origin that hosts the well-known record.
+ * @param fetchImpl - The HTTP client for the well-known request.
+ * @param signal - The deadline signal shared with the bundle request.
+ * @returns The validated service issuer record.
+ * @throws {@link SecretEffectsClientError} When the request or record is invalid.
+ */
+async function fetchServiceWellKnown(
+	apiOrigin: string,
+	fetchImpl: typeof globalThis.fetch,
+	signal: AbortSignal,
+): Promise<ServiceWellKnown> {
+	let response: Response;
+	try {
+		response = await fetchImpl(`${apiOrigin}/.well-known/secret-effects`, {
+			signal,
+		});
+	} catch {
+		throw clientError(
+			"REQUEST",
+			"The Secret Effects issuer record is unreachable.",
+		);
+	}
+	if (!response.ok) {
+		throw clientError(
+			"RESPONSE",
+			`The Secret Effects issuer record returned HTTP ${response.status}.`,
+		);
+	}
+	let record: unknown;
+	try {
+		record = await response.json();
+	} catch {
+		throw clientError(
+			"RESPONSE",
+			"The Secret Effects issuer record is invalid.",
+		);
+	}
+	if (
+		typeof record !== "object" ||
+		record === null ||
+		!("version" in record) ||
+		record.version !== 1 ||
+		!("issuerPublicKey" in record) ||
+		typeof record.issuerPublicKey !== "string" ||
+		!/^[0-9a-f]{64}$/.test(record.issuerPublicKey)
+	) {
+		throw clientError(
+			"RESPONSE",
+			"The Secret Effects issuer record is invalid.",
+		);
+	}
+	return { issuerPublicKey: record.issuerPublicKey };
 }
 
 /**
