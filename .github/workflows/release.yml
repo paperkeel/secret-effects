@@ -53,7 +53,8 @@ jobs:
           mkdir -p dist
           archive="dist/secreteffects-${GITHUB_REF_NAME#v}-node.tar.gz"
           tar -czf "$archive" -C apps/cli/dist secreteffects.js
-          sha256sum "$archive" > "$archive.sha256"
+          archive_name="$(basename "$archive")"
+          (cd dist && sha256sum "$archive_name" > "$archive_name.sha256")
           echo "path=$archive" >> "$GITHUB_OUTPUT"
 
       - name: Attest the release archive
