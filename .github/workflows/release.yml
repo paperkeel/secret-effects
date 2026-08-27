@@ -35,7 +35,9 @@ jobs:
 
       - name: Check the signed tag and version
         run: |
-          git fetch --no-tags origin master:refs/remotes/origin/master
+          git fetch --force --no-tags origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME" \
+            master:refs/remotes/origin/master
           test "$(git rev-parse "$GITHUB_REF_NAME^{commit}")" = "$(git rev-parse origin/master)" || { echo "Tag the current master commit." >&2; exit 1; }
           git -c gpg.ssh.allowedSignersFile="$GITHUB_WORKSPACE/.github/signing_allowed_signers" verify-tag "$GITHUB_REF_NAME" || { echo "Use an SSH-signed tag from an allowed signer." >&2; exit 1; }
           test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME" || { echo "The package version must match the tag." >&2; exit 1; }
