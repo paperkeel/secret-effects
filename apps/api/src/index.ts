@@ -133,6 +133,7 @@ export default Sentry.withSentry<ApiEnv, PurgeMessage>(
 			urlQueryParams: false,
 			userInfo: false,
 		},
+		dsn: env.SENTRY_DSN,
 		enabled: env.SENTRY_DSN !== undefined,
 		maxBreadcrumbs: 0,
 		sendDefaultPii: false,
