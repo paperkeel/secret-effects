@@ -404,11 +404,20 @@ function validateFile(file) {
 		report(file, 0, "file-signature", "Add exactly one Semark file signature.");
 	} else {
 		const [{ comment, result }] = fileSignatures;
-		const firstToken =
-			sourceFile.statements[0]?.getStart(sourceFile) ?? source.length;
+		const firstStatement = sourceFile.statements[0];
+		const firstToken = firstStatement?.getStart(sourceFile) ?? source.length;
+		const firstCallableComment =
+			firstStatement !== undefined && ts.isFunctionDeclaration(firstStatement)
+				? immediateComment(source, comments, firstToken)
+				: undefined;
+		const firstCodeBoundary =
+			firstCallableComment !== undefined &&
+			parseMethodSignature(firstCallableComment.raw).signature
+				? firstCallableComment.start
+				: firstToken;
 		if (
-			comment.end > firstToken ||
-			source.slice(comment.end, firstToken).trim() !== ""
+			comment.end > firstCodeBoundary ||
+			source.slice(comment.end, firstCodeBoundary).trim() !== ""
 		) {
 			report(
 				file,

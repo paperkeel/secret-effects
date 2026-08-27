@@ -697,22 +697,38 @@ async function persistIssuedCredential(
 		subject: identifier,
 		details: { type: issue.type, issuedBy, expiresAt: issue.expiresAt },
 	});
-	await env.CATALOG.prepare(
-		`INSERT INTO credentials(identifier, type, project, environment, auth_public_key, decrypt_public_key, status, issued_at, expires_at, issued_by)
-		 VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-	)
-		.bind(
-			identifier,
-			issue.type,
-			issue.project,
-			issue.environment,
-			issue.authPublicKey,
-			issue.decryptPublicKey,
-			now,
-			issue.expiresAt,
-			issuedBy,
+	try {
+		await env.CATALOG.prepare(
+			`INSERT INTO credentials(identifier, type, project, environment, auth_public_key, decrypt_public_key, status, issued_at, expires_at, issued_by)
+			 VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
 		)
-		.run();
+			.bind(
+				identifier,
+				issue.type,
+				issue.project,
+				issue.environment,
+				issue.authPublicKey,
+				issue.decryptPublicKey,
+				now,
+				issue.expiresAt,
+				issuedBy,
+			)
+			.run();
+	} catch (cause) {
+		if (
+			issue.type === "global" &&
+			issuedBy === "bootstrap" &&
+			cause instanceof Error &&
+			cause.message.includes("UNIQUE constraint failed: credentials.type")
+		) {
+			throw new ApiError({
+				status: 409,
+				code: "already_bootstrapped",
+				message: "The service already has a Global credential.",
+			});
+		}
+		throw cause;
+	}
 	return json(
 		{
 			payload: bytesToBase64Url(payloadBytes),

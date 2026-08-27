@@ -29,7 +29,7 @@ export interface LoadEnvOptions {
  * @param config - The repository configuration that defines the environment.
  * @param options - The optional settings for the secret or runtime load.
  * @returns The validated environment values.
- * @throws {@link Error} When required deployment configuration is invalid.
+ * @throws {@link Error} When credential parsing, scope validation, HTTP access, bundle validation, decryption, or schema parsing fails.
  */
 export async function loadEnv<Config extends SecretEffectsConfig>(
 	config: Config,
@@ -110,7 +110,7 @@ export async function loadEnv<Config extends SecretEffectsConfig>(
  * Reads the configured credential from the process environment.
  *
  * @returns The configured credential string.
- * @throws {@link Error} When required deployment configuration is invalid.
+ * @throws {@link Error} When `SECRET_EFFECTS_KEY` is missing or empty.
  */
 function readCredentialFromRuntime(): string {
 	const value =

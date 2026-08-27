@@ -171,7 +171,8 @@ application repository, the `secreteffects` command, and the CI/CD credential.
 | `alchemy.run.ts`    | Cloudflare infrastructure                                |
 
 The applications use the workspace packages for protocol, cryptography,
-configuration, and runtime loading. The API stores only encrypted bundles.
+configuration, and runtime loading. The API stores credential records, audit
+records, and encrypted bundles. It never decrypts bundle contents.
 
 ## Development
 

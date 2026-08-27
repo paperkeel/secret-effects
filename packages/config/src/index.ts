@@ -63,7 +63,7 @@ export interface SecretEffectsManifest {
  *
  * @typeParam Schema - The Zod schema type for the secret value.
  * @param schema - The Zod schema that validates the secret value.
- * @param options - The optional settings for the secret or runtime load.
+ * @param options - The environment requirements and mirror mappings for the secret.
  * @returns The normalized secret definition.
  */
 export function secret<Schema extends ZodType>(
@@ -81,7 +81,7 @@ export function secret<Schema extends ZodType>(
  * Validates and normalizes one repository secret configuration.
  *
  * @typeParam Secrets - The secret record type retained by the normalized configuration.
- * @param input - The validated operation data at this boundary.
+ * @param input - The repository configuration to validate and normalize.
  * @returns The normalized repository configuration.
  * @throws {@link Error} When configuration data violates a required constraint.
  */
@@ -202,7 +202,7 @@ export function schemaManifest(
  * @typeParam Config - The repository configuration that determines the result shape.
  * @param config - The repository configuration that defines the environment.
  * @param environment - The machine name of the target environment.
- * @param values - The byte arrays or environment values for the operation.
+ * @param values - The nested environment and secret values to resolve.
  * @returns The validated materialized environment.
  */
 export function materializeEnvironment<Config extends SecretEffectsConfig>(
@@ -232,10 +232,10 @@ export function materializeEnvironment<Config extends SecretEffectsConfig>(
 /**
  * Resolves one direct or mirrored secret value without cycles.
  *
- * @param name - The environment, option, header, or variable name for the operation.
+ * @param name - The secret key to resolve.
  * @param environment - The machine name of the target environment.
  * @param definition - The secret definition that controls requirements and mirrors.
- * @param values - The byte arrays or environment values for the operation.
+ * @param values - The nested environment and secret values to resolve.
  * @param visited - The active mirror path used to detect cycles.
  * @returns The resolved secret value, or undefined when no value exists.
  * @throws {@link Error} When configuration data violates a required constraint.

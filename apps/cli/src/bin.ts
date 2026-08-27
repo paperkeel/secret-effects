@@ -484,7 +484,7 @@ async function readEnvironment(args: readonly string[]): Promise<void> {
  * Purges one environment cache tag when cache access exists.
  *
  * @param args - The command arguments for this operation.
- * @returns True when the cache purge succeeds.
+ * @returns A promise that completes after the command prints the purge result.
  * @throws {@link CliError} When command input or a service response violates a command boundary.
  */
 async function purgeCache(args: readonly string[]): Promise<void> {
