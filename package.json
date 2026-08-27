@@ -10,6 +10,10 @@
 	},
 	"pnpm": {
 		"overrides": {
+			"@hono/node-server": "1.19.15",
+			"esbuild": "0.28.2",
+			"hono": "4.13.5",
+			"lodash": "4.18.1",
 			"valibot": "1.4.2"
 		}
 	},
@@ -45,14 +49,14 @@
 		"@types/node": "24.10.13",
 		"@types/react": "19.2.14",
 		"alchemy": "2.0.0-beta.74",
-		"esbuild": "0.27.7",
+		"esbuild": "0.28.2",
 		"oxlint": "1.60.0",
 		"oxlint-tsgolint": "7.0.2001",
 		"prettier": "3.8.1",
 		"react": "19.2.4",
 		"tsx": "4.21.0",
 		"typescript": "5.9.3",
-		"vite": "8.0.7",
+		"vite": "8.2.2",
 		"vitest": "4.1.11",
 		"wrangler": "4.127.0"
 	}
