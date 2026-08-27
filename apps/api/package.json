@@ -8,6 +8,7 @@
 		"@noble/hashes": "2.0.1",
 		"@secret-effects/crypto": "workspace:*",
 		"@secret-effects/protocol": "workspace:*",
+		"@sentry/cloudflare": "10.71.0",
 		"effect": "4.0.0-rc.112"
 	}
 }

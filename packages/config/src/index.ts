@@ -1,3 +1,11 @@
+/**
+ * Defines and validates Secret Effects repository configuration.
+ *
+ * @remarks
+ * Responsibility: Owns secret definitions, environment rules, mirror resolution, schema construction, and stable manifest digests.
+ *
+ * Boundary: Accepts Zod schemas and plain secret values. It does not read credentials or contact the service.
+ */
 import type { ZodType } from "zod";
 import { z } from "zod";
 import {
@@ -50,6 +58,14 @@ export interface SecretEffectsManifest {
 	>;
 }
 
+/**
+ * Creates one normalized secret definition.
+ *
+ * @typeParam Schema - The Zod schema type for the secret value.
+ * @param schema - The Zod schema that validates the secret value.
+ * @param options - The optional settings for the secret or runtime load.
+ * @returns The normalized secret definition.
+ */
 export function secret<Schema extends ZodType>(
 	schema: Schema,
 	options: SecretOptions = {},
@@ -61,6 +77,14 @@ export function secret<Schema extends ZodType>(
 	};
 }
 
+/**
+ * Validates and normalizes one repository secret configuration.
+ *
+ * @typeParam Secrets - The secret record type retained by the normalized configuration.
+ * @param input - The validated operation data at this boundary.
+ * @returns The normalized repository configuration.
+ * @throws {@link Error} When configuration data violates a required constraint.
+ */
 export function defineConfig<const Secrets extends SecretRecord>(input: {
 	project: string;
 	environments?: readonly string[];
@@ -98,6 +122,15 @@ export function defineConfig<const Secrets extends SecretRecord>(input: {
 	return { project: input.project, environments, secrets: input.secrets };
 }
 
+/**
+ * Builds the strict Zod schema for one configured environment.
+ *
+ * @typeParam Config - The repository configuration that determines the result shape.
+ * @param config - The repository configuration that defines the environment.
+ * @param environment - The machine name of the target environment.
+ * @returns The strict environment schema.
+ * @throws {@link Error} When configuration data violates a required constraint.
+ */
 export function schemaForEnvironment<Config extends SecretEffectsConfig>(
 	config: Config,
 	environment: string,
@@ -114,6 +147,12 @@ export function schemaForEnvironment<Config extends SecretEffectsConfig>(
 	return z.object(shape).strict();
 }
 
+/**
+ * Computes the stable SHA-256 digest for a repository schema.
+ *
+ * @param config - The repository configuration that defines the environment.
+ * @returns The lowercase schema digest.
+ */
 export async function schemaDigest(
 	config: SecretEffectsConfig,
 ): Promise<string> {
@@ -125,6 +164,12 @@ export async function schemaDigest(
 	).join("");
 }
 
+/**
+ * Builds a stable schema manifest from repository configuration.
+ *
+ * @param config - The repository configuration that defines the environment.
+ * @returns The stable repository schema manifest.
+ */
 export function schemaManifest(
 	config: SecretEffectsConfig,
 ): SecretEffectsManifest {
@@ -151,6 +196,15 @@ export function schemaManifest(
 	};
 }
 
+/**
+ * Resolves mirrors and validates one complete environment.
+ *
+ * @typeParam Config - The repository configuration that determines the result shape.
+ * @param config - The repository configuration that defines the environment.
+ * @param environment - The machine name of the target environment.
+ * @param values - The byte arrays or environment values for the operation.
+ * @returns The validated materialized environment.
+ */
 export function materializeEnvironment<Config extends SecretEffectsConfig>(
 	config: Config,
 	environment: string,
@@ -175,6 +229,17 @@ export function materializeEnvironment<Config extends SecretEffectsConfig>(
 	return schema.parse(materialized) as InferConfig<Config>;
 }
 
+/**
+ * Resolves one direct or mirrored secret value without cycles.
+ *
+ * @param name - The environment, option, header, or variable name for the operation.
+ * @param environment - The machine name of the target environment.
+ * @param definition - The secret definition that controls requirements and mirrors.
+ * @param values - The byte arrays or environment values for the operation.
+ * @param visited - The active mirror path used to detect cycles.
+ * @returns The resolved secret value, or undefined when no value exists.
+ * @throws {@link Error} When configuration data violates a required constraint.
+ */
 function resolveValue(
 	name: string,
 	environment: string,

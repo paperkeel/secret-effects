@@ -1,6 +1,15 @@
+/**
+ * Serves the Secret Effects Worker API and queue consumer.
+ *
+ * @remarks
+ * Responsibility: Owns request routing, authentication, access checks, control records, bundle coordination, and cache invalidation.
+ *
+ * Boundary: Accepts encrypted bundles and signed requests. It delegates cryptography, project serialization, and audit storage.
+ */
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Sentry from "@sentry/cloudflare";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
@@ -65,7 +74,15 @@ interface CredentialRow {
 
 export { AuditLog, ProjectState };
 
-export default {
+const handler = {
+	/**
+	 * Handles one Secret Effects Worker request.
+	 *
+	 * @param request - The inbound HTTP request.
+	 * @param env - The Cloudflare resource bindings for the service.
+	 * @param ctx - The Cloudflare execution or Durable Object context.
+	 * @returns The HTTP response for the operation.
+	 */
 	async fetch(request, env, ctx): Promise<Response> {
 		return Effect.runPromise(
 			handleRequest(request, env, ctx).pipe(
@@ -74,6 +91,14 @@ export default {
 		);
 	},
 
+	/**
+	 * Processes encrypted bundle cache purge messages.
+	 *
+	 * @param batch - The delivered cache purge message batch.
+	 * @param _env - The unused Worker bindings supplied by the queue runtime.
+	 * @param ctx - The Cloudflare execution or Durable Object context.
+	 * @returns A promise that completes after the operation finishes.
+	 */
 	async queue(batch, _env, ctx): Promise<void> {
 		for (const message of batch.messages) {
 			try {
@@ -88,13 +113,53 @@ export default {
 					continue;
 				}
 				message.ack();
-			} catch {
+			} catch (cause) {
+				Sentry.captureException(cause);
 				message.retry({ delaySeconds: 30 });
 			}
 		}
 	},
 } satisfies ExportedHandler<ApiEnv, PurgeMessage>;
 
+export default Sentry.withSentry<ApiEnv, PurgeMessage>(
+	(env) => ({
+		beforeSend: scrubSentryEvent,
+		dataCollection: {
+			cookies: false,
+			databaseQueryData: false,
+			httpBodies: [],
+			httpHeaders: { request: false, response: false },
+			stackFrameVariables: false,
+			urlQueryParams: false,
+			userInfo: false,
+		},
+		enabled: env.SENTRY_DSN !== undefined,
+		maxBreadcrumbs: 0,
+		sendDefaultPii: false,
+		tracesSampleRate: 0,
+	}),
+	handler,
+);
+
+/**
+ * Removes request and transaction metadata from a Sentry error event.
+ *
+ * @param event - The error event to sanitize.
+ * @returns The error event without request-specific metadata.
+ */
+function scrubSentryEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
+	const { request: _request, transaction: _transaction, ...sanitized } = event;
+	return sanitized;
+}
+
+/**
+ * Wraps API request execution in the typed application effect.
+ *
+ * @param request - The inbound HTTP request.
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param ctx - The Cloudflare execution or Durable Object context.
+ * @returns The typed effect that produces the HTTP response.
+ */
 function handleRequest(
 	request: Request,
 	env: ApiEnv,
@@ -102,23 +167,44 @@ function handleRequest(
 ): Effect.Effect<Response, ApiError> {
 	return Effect.tryPromise({
 		try: async () => route(request, env, ctx),
-		catch: (cause) =>
-			cause instanceof ApiError
-				? cause
-				: cause instanceof Schema.SchemaError
-					? new ApiError({
-							status: 400,
-							code: "invalid_request",
-							message: "The request does not match the API schema.",
-						})
-					: new ApiError({
-							status: 500,
-							code: "internal_error",
-							message: "The request failed.",
-						}),
+		catch: mapApiError,
 	});
 }
 
+/**
+ * Converts a request failure into an API error and reports unexpected causes.
+ *
+ * @param cause - The request failure to classify.
+ * @returns The public API error for the failure.
+ */
+function mapApiError(cause: unknown): ApiError {
+	if (cause instanceof ApiError) {
+		return cause;
+	}
+	if (cause instanceof Schema.SchemaError) {
+		return new ApiError({
+			status: 400,
+			code: "invalid_request",
+			message: "The request does not match the API schema.",
+		});
+	}
+	Sentry.captureException(cause);
+	return new ApiError({
+		status: 500,
+		code: "internal_error",
+		message: "The request failed.",
+	});
+}
+
+/**
+ * Routes one authenticated or public API request.
+ *
+ * @param request - The inbound HTTP request.
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param ctx - The Cloudflare execution or Durable Object context.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function route(
 	request: Request,
 	env: ApiEnv,
@@ -248,6 +334,15 @@ async function route(
 	});
 }
 
+/**
+ * Issues the first Global credential after global admin token authentication.
+ *
+ * @param request - The inbound HTTP request.
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param body - The raw credential issue request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function bootstrap(
 	request: Request,
 	env: ApiEnv,
@@ -256,12 +351,12 @@ async function bootstrap(
 	const authorization = request.headers.get("authorization");
 	if (
 		authorization === null ||
-		!timingSafeEqualStrings(authorization, `Bearer ${env.BOOTSTRAP_TOKEN}`)
+		!timingSafeEqualStrings(authorization, `Bearer ${env.GLOBAL_ADMIN_TOKEN}`)
 	) {
 		throw new ApiError({
 			status: 401,
 			code: "unauthorized",
-			message: "The bootstrap token is invalid.",
+			message: "The global admin token is invalid.",
 		});
 	}
 	const existing = await env.CATALOG.prepare(
@@ -290,6 +385,15 @@ async function bootstrap(
 	return persistIssuedCredential(env, issue, "bootstrap");
 }
 
+/**
+ * Authenticates a signed request and rejects stale or replayed nonces.
+ *
+ * @param request - The inbound HTTP request.
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param body - The exact request body bytes covered by the signature.
+ * @returns The authenticated active credential and its service scope.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function authenticate(
 	request: Request,
 	env: ApiEnv,
@@ -379,6 +483,15 @@ async function authenticate(
 	};
 }
 
+/**
+ * Creates one project with its default environments.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param body - The raw project creation request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function createProject(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -416,6 +529,12 @@ async function createProject(
 	return json({ project: input.name, environments: DEFAULT_ENVIRONMENTS }, 201);
 }
 
+/**
+ * Lists all registered projects.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @returns The HTTP response for the operation.
+ */
 async function listProjects(env: ApiEnv): Promise<Response> {
 	const result = await env.CATALOG.prepare(
 		"SELECT name, display_name AS displayName, created_at AS createdAt FROM projects ORDER BY name",
@@ -423,6 +542,13 @@ async function listProjects(env: ApiEnv): Promise<Response> {
 	return json({ projects: result.results });
 }
 
+/**
+ * Lists environments for the selected project.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param project - The machine name of the target project.
+ * @returns The HTTP response for the operation.
+ */
 async function listEnvironments(
 	env: ApiEnv,
 	project: string,
@@ -435,6 +561,17 @@ async function listEnvironments(
 	return json({ project, environments: result.results });
 }
 
+/**
+ * Creates one named environment within a project.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @param body - The optional environment creation request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function createEnvironment(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -478,6 +615,15 @@ async function createEnvironment(
 	return json({ project, environment }, 201);
 }
 
+/**
+ * Authorizes and issues a subordinate credential.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param body - The raw credential issue request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function issueCredential(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -510,6 +656,14 @@ async function issueCredential(
 	return persistIssuedCredential(env, issue, actor.identifier);
 }
 
+/**
+ * Signs, audits, and persists one authorized credential.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param issue - The credential fields that the issuer must validate and sign.
+ * @param issuedBy - The identity that authorized credential issuance.
+ * @returns The HTTP response for the operation.
+ */
 async function persistIssuedCredential(
 	env: ApiEnv,
 	issue: typeof CredentialIssueRequest.Type,
@@ -567,6 +721,13 @@ async function persistIssuedCredential(
 	);
 }
 
+/**
+ * Lists credentials visible to the authenticated scope.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @returns The HTTP response for the operation.
+ */
 async function listCredentials(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -587,6 +748,16 @@ async function listCredentials(
 	return json({ credentials: result.results });
 }
 
+/**
+ * Revokes one active subordinate credential.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param identifier - The stable credential or recipient identifier.
+ * @param body - The raw credential revocation request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function revokeCredential(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -658,6 +829,16 @@ async function revokeCredential(
 	return json({ identifier, status: "revoked", revokedAt: now });
 }
 
+/**
+ * Validates and registers one immutable schema manifest.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param project - The machine name of the target project.
+ * @param body - The raw schema manifest request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function registerSchema(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -724,6 +905,13 @@ async function registerSchema(
 	return json({ project, digest: input.digest }, existing === null ? 201 : 200);
 }
 
+/**
+ * Lists registered schema digests for one project.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param project - The machine name of the target project.
+ * @returns The HTTP response for the operation.
+ */
 async function listSchemas(env: ApiEnv, project: string): Promise<Response> {
 	const result = await env.CATALOG.prepare(
 		"SELECT digest, created_at AS createdAt, created_by AS createdBy FROM schema_manifests WHERE project = ? ORDER BY created_at DESC",
@@ -733,6 +921,18 @@ async function listSchemas(env: ApiEnv, project: string): Promise<Response> {
 	return json({ project, schemas: result.results });
 }
 
+/**
+ * Encrypts and publishes one environment bundle.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param ctx - The Cloudflare execution or Durable Object context.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @param body - The raw encrypted bundle publication request body.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function publishBundle(
 	env: ApiEnv,
 	ctx: ExecutionContext,
@@ -869,6 +1069,16 @@ async function publishBundle(
 	);
 }
 
+/**
+ * Reads one accepted encrypted bundle through the edge cache.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @returns The HTTP response for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function readBundle(
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
@@ -919,6 +1129,15 @@ async function readBundle(
 	return privateBundleResponse(cacheResponse.body, current.digest);
 }
 
+/**
+ * Purges or queues cache invalidation for one environment.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param ctx - The Cloudflare execution or Durable Object context.
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @returns The HTTP response for the operation.
+ */
 async function purgeEnvironment(
 	env: ApiEnv,
 	ctx: ExecutionContext,
@@ -933,6 +1152,13 @@ async function purgeEnvironment(
 	return json({ project, environment, cache: purged ? "purged" : "pending" });
 }
 
+/**
+ * Purges one environment cache tag when cache access exists.
+ *
+ * @param ctx - The Cloudflare execution or Durable Object context.
+ * @param tag - The cache tag to invalidate.
+ * @returns True when the cache purge succeeds.
+ */
 async function purgeCache(
 	ctx: ExecutionContext,
 	tag: string,
@@ -947,6 +1173,14 @@ async function purgeCache(
 	}
 }
 
+/**
+ * Validates credential keys, scope shape, expiration, and referenced resources.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param issue - The credential fields that the issuer must validate and sign.
+ * @returns A promise that completes after the operation finishes.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function validateCredentialIssue(
 	env: ApiEnv,
 	issue: typeof CredentialIssueRequest.Type,
@@ -1032,6 +1266,14 @@ async function validateCredentialIssue(
 	}
 }
 
+/**
+ * Digests audit details and appends one global control event.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param input - The validated operation data at this boundary.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function appendAudit(
 	env: ApiEnv,
 	actor: AuthenticatedCredential | string,
@@ -1058,10 +1300,23 @@ async function appendAudit(
 	});
 }
 
+/**
+ * Gets the global audit Durable Object stub.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @returns The global audit object stub.
+ */
 function audit(env: ApiEnv): DurableObjectStub<AuditLog> {
 	return env.AUDIT.getByName("global");
 }
 
+/**
+ * Converts an invalid machine name into an API error.
+ *
+ * @param value - The machine name to validate for an API request.
+ * @param label - The human-readable name for validation errors.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 function assertMachineNameApi(value: string, label: string): void {
 	try {
 		assertMachineName(value, label);
@@ -1074,6 +1329,13 @@ function assertMachineNameApi(value: string, label: string): void {
 	}
 }
 
+/**
+ * Rejects a credential type outside the permitted set.
+ *
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param types - The credential types permitted for the operation.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 function allow(
 	actor: AuthenticatedCredential,
 	types: readonly CredentialType[],
@@ -1087,6 +1349,14 @@ function allow(
 	}
 }
 
+/**
+ * Rejects a resource scope outside the authenticated credential scope.
+ *
+ * @param actor - The authenticated credential or issuer identity that authorizes the operation.
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 function assertScope(
 	actor: AuthenticatedCredential,
 	project: string,
@@ -1108,6 +1378,13 @@ function assertScope(
 	}
 }
 
+/**
+ * Reads a request body within the service size limit.
+ *
+ * @param request - The inbound HTTP request.
+ * @returns The bounded request bytes.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 async function readBody(request: Request): Promise<Uint8Array> {
 	const length = Number(request.headers.get("content-length") ?? "0");
 	if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
@@ -1128,6 +1405,13 @@ async function readBody(request: Request): Promise<Uint8Array> {
 	return body;
 }
 
+/**
+ * Parses request bytes as JSON.
+ *
+ * @param body - The bounded request body bytes to parse.
+ * @returns The parsed JSON value.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 function parseJson(body: Uint8Array): unknown {
 	try {
 		return JSON.parse(new TextDecoder().decode(body));
@@ -1140,6 +1424,14 @@ function parseJson(body: Uint8Array): unknown {
 	}
 }
 
+/**
+ * Reads one required authentication header.
+ *
+ * @param request - The inbound HTTP request.
+ * @param name - The authentication header name to read.
+ * @returns The required header value.
+ * @throws {@link ApiError} When request data, access, or service state violates an API boundary.
+ */
 function requiredHeader(request: Request, name: string): string {
 	const value = request.headers.get(name);
 	if (value === null || value.length === 0) {
@@ -1152,6 +1444,13 @@ function requiredHeader(request: Request, name: string): string {
 	return value;
 }
 
+/**
+ * Compares equal-length strings without data-dependent early exit.
+ *
+ * @param left - The first string in the constant-time comparison.
+ * @param right - The second string in the constant-time comparison.
+ * @returns True when both strings contain equal bytes.
+ */
 function timingSafeEqualStrings(left: string, right: string): boolean {
 	const leftBytes = encoder.encode(left);
 	const rightBytes = encoder.encode(right);
@@ -1165,6 +1464,13 @@ function timingSafeEqualStrings(left: string, right: string): boolean {
 	return difference === 0;
 }
 
+/**
+ * Creates a private JSON response with security headers.
+ *
+ * @param value - The response value to serialize as JSON.
+ * @param status - The HTTP status for the response.
+ * @returns The private JSON response.
+ */
 function json(value: unknown, status = 200): Response {
 	return Response.json(value, {
 		status,
@@ -1175,6 +1481,13 @@ function json(value: unknown, status = 200): Response {
 	});
 }
 
+/**
+ * Creates a private encrypted bundle response.
+ *
+ * @param body - The encrypted bundle response body.
+ * @param etag - The optional bundle digest for the ETag header.
+ * @returns The private encrypted bundle response.
+ */
 function privateBundleResponse(
 	body: BodyInit | null,
 	etag: string | null,
@@ -1190,6 +1503,12 @@ function privateBundleResponse(
 	return new Response(body, { headers });
 }
 
+/**
+ * Converts an API error into a private JSON response.
+ *
+ * @param error - The typed API failure to serialize.
+ * @returns The HTTP response for the operation.
+ */
 function errorResponse(error: ApiError): Response {
 	return json(
 		{ error: { code: error.code, message: error.message } },

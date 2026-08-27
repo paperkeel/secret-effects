@@ -1,3 +1,11 @@
+/**
+ * Renders the interactive Secret Effects terminal interface.
+ *
+ * @remarks
+ * Responsibility: Owns credential inspection, remote section loading, keyboard navigation, and terminal rendering.
+ *
+ * Boundary: Accepts one configured credential. It delegates request signing and does not change remote data.
+ */
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
 import { useState } from "react";
@@ -15,20 +23,32 @@ const sections = await loadSections().catch((cause: unknown): Section[] => [
 	},
 ]);
 
+/**
+ * Renders the terminal interface for loaded service sections.
+ *
+ * @returns The rendered terminal interface.
+ */
 function App() {
 	const [selected, setSelected] = useState(0);
-	useKeyboard((event) => {
-		if (event.name === "q" || event.name === "escape") {
-			renderer.destroy();
-			process.exit(0);
-		}
-		if (event.name === "left" || event.name === "up") {
-			setSelected((current) => Math.max(0, current - 1));
-		}
-		if (event.name === "right" || event.name === "down") {
-			setSelected((current) => Math.min(sections.length - 1, current + 1));
-		}
-	});
+	useKeyboard(
+		/**
+		 * Handles terminal navigation and exit keys.
+		 *
+		 * @param event - The terminal keyboard event to handle.
+		 */
+		(event) => {
+			if (event.name === "q" || event.name === "escape") {
+				renderer.destroy();
+				process.exit(0);
+			}
+			if (event.name === "left" || event.name === "up") {
+				setSelected((current) => Math.max(0, current - 1));
+			}
+			if (event.name === "right" || event.name === "down") {
+				setSelected((current) => Math.min(sections.length - 1, current + 1));
+			}
+		},
+	);
 
 	const current = sections[selected] ?? { title: "No data", value: {} };
 	return (
@@ -52,6 +72,12 @@ function App() {
 	);
 }
 
+/**
+ * Loads the credential and each permitted terminal section.
+ *
+ * @returns The terminal sections visible to the credential.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function loadSections(): Promise<Section[]> {
 	const rendered = process.env.SECRET_EFFECTS_KEY;
 	if (rendered === undefined || rendered.length === 0) {
@@ -112,6 +138,14 @@ async function loadSections(): Promise<Section[]> {
 	return result;
 }
 
+/**
+ * Loads one remote section and records either its value or error.
+ *
+ * @param sections - The mutable terminal section collection.
+ * @param title - The display title for the remote section.
+ * @param load - The asynchronous loader for the section value.
+ * @returns A promise that completes after the operation finishes.
+ */
 async function addRemoteSection(
 	sections: Section[],
 	title: string,
@@ -129,6 +163,14 @@ async function addRemoteSection(
 	}
 }
 
+/**
+ * Sends one signed read request and parses its JSON response.
+ *
+ * @param credential - The credential that authenticates or decrypts the operation.
+ * @param path - The request path or local file path for the operation.
+ * @returns The parsed JSON response value.
+ * @throws {@link CliError} When command input or a service response violates a command boundary.
+ */
 async function requestJson(
 	credential: Awaited<ReturnType<typeof parseCredential>>,
 	path: string,

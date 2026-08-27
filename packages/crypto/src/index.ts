@@ -1,3 +1,11 @@
+/**
+ * Implements Secret Effects credential and bundle cryptography.
+ *
+ * @remarks
+ * Responsibility: Owns key derivation, credential encoding, request signatures, envelope encryption, and bundle verification.
+ *
+ * Boundary: Accepts protocol data and key material in memory. It does not persist credentials, keys, or decrypted values.
+ */
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
@@ -59,18 +67,37 @@ export interface BundleRecipientInput {
 	publicKey: Uint8Array;
 }
 
+/**
+ * Generates the requested number of cryptographically random bytes.
+ *
+ * @param length - The number of random bytes to generate.
+ * @returns The generated random bytes.
+ */
 export function randomBytes(length: number): Uint8Array {
 	const bytes = new Uint8Array(length);
 	crypto.getRandomValues(bytes);
 	return bytes;
 }
 
+/**
+ * Encodes bytes as lowercase hexadecimal text.
+ *
+ * @param bytes - The byte sequence to process.
+ * @returns The lowercase hexadecimal representation.
+ */
 export function bytesToHex(bytes: Uint8Array): string {
 	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
 		"",
 	);
 }
 
+/**
+ * Decodes validated hexadecimal text into bytes.
+ *
+ * @param value - The hexadecimal text to decode.
+ * @returns The decoded bytes.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 export function hexToBytes(value: string): Uint8Array {
 	if (value.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(value)) {
 		throw new Error("The value is not valid hexadecimal data.");
@@ -80,18 +107,42 @@ export function hexToBytes(value: string): Uint8Array {
 	);
 }
 
+/**
+ * Encodes bytes as base64url text.
+ *
+ * @param bytes - The byte sequence to process.
+ * @returns The base64url representation.
+ */
 export function bytesToBase64Url(bytes: Uint8Array): string {
 	return Buffer.from(bytes).toString("base64url");
 }
 
+/**
+ * Decodes base64url text into bytes.
+ *
+ * @param value - The base64url text to decode.
+ * @returns The decoded bytes.
+ */
 export function base64UrlToBytes(value: string): Uint8Array {
 	return new Uint8Array(Buffer.from(value, "base64url"));
 }
 
+/**
+ * Generates a random Secret Effects master key.
+ *
+ * @returns A new random master key.
+ */
 export function generateMasterKey(): Uint8Array {
 	return randomBytes(MASTER_KEY_BYTES);
 }
 
+/**
+ * Derives authentication and decryption key pairs from one master key.
+ *
+ * @param masterKey - The secret master key used for deterministic key derivation.
+ * @returns The deterministic authentication and decryption key pairs.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 export function deriveKeys(masterKey: Uint8Array): DerivedKeys {
 	if (masterKey.byteLength !== MASTER_KEY_BYTES) {
 		throw new Error(`The master key must contain ${MASTER_KEY_BYTES} bytes.`);
@@ -112,6 +163,12 @@ export function deriveKeys(masterKey: Uint8Array): DerivedKeys {
 	};
 }
 
+/**
+ * Encodes and conditionally compresses a credential payload.
+ *
+ * @param payload - The credential or message bytes to sign or verify.
+ * @returns The codec marker and encoded payload bytes.
+ */
 export async function encodeCredentialPayload(
 	payload: CredentialPayload,
 ): Promise<Uint8Array> {
@@ -123,6 +180,13 @@ export async function encodeCredentialPayload(
 	return concatBytes(new Uint8Array([0]), raw);
 }
 
+/**
+ * Decodes and validates a bounded credential payload.
+ *
+ * @param bytes - The byte sequence to process.
+ * @returns The validated credential payload.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 export async function decodeCredentialPayload(
 	bytes: Uint8Array,
 ): Promise<CredentialPayload> {
@@ -143,6 +207,13 @@ export async function decodeCredentialPayload(
 	return Schema.decodeUnknownSync(CredentialPayload)(decode(raw));
 }
 
+/**
+ * Signs payload bytes with an Ed25519 private key.
+ *
+ * @param payload - The credential or message bytes to sign or verify.
+ * @param privateKey - The Ed25519 private key that creates the signature.
+ * @returns The Ed25519 signature bytes.
+ */
 export function signPayload(
 	payload: Uint8Array,
 	privateKey: Uint8Array,
@@ -150,6 +221,14 @@ export function signPayload(
 	return ed25519.sign(payload, privateKey);
 }
 
+/**
+ * Verifies an Ed25519 signature over payload bytes.
+ *
+ * @param payload - The credential or message bytes to sign or verify.
+ * @param signature - The Ed25519 signature bytes to verify or encode.
+ * @param publicKey - The Ed25519 public key that verifies the signature.
+ * @returns True when the signature is valid.
+ */
 export function verifyPayload(
 	payload: Uint8Array,
 	signature: Uint8Array,
@@ -158,6 +237,14 @@ export function verifyPayload(
 	return ed25519.verify(signature, payload, publicKey);
 }
 
+/**
+ * Assembles signed payload bytes and a master key into one checked credential string.
+ *
+ * @param payloadBytes - The encoded credential payload bytes.
+ * @param signature - The Ed25519 signature bytes to verify or encode.
+ * @param masterKey - The secret master key used for deterministic key derivation.
+ * @returns The complete checked credential string.
+ */
 export function assembleCredential(
 	payloadBytes: Uint8Array,
 	signature: Uint8Array,
@@ -174,6 +261,13 @@ export function assembleCredential(
 	return `${CREDENTIAL_PREFIX}_payload:${payload}_signature:${signed}_checksum:${checksum}_key:${key}`;
 }
 
+/**
+ * Parses and verifies one active Secret Effects credential.
+ *
+ * @param rendered - The complete rendered credential string.
+ * @returns The verified active credential and derived keys.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 export async function parseCredential(
 	rendered: string,
 ): Promise<ParsedCredential> {
@@ -225,6 +319,12 @@ export async function parseCredential(
 	return { payload, payloadBytes, signature, masterKey, keys, rendered };
 }
 
+/**
+ * Exports the signed public portion of a parsed credential.
+ *
+ * @param credential - The credential that authenticates or decrypts the operation.
+ * @returns The transferable signed public descriptor.
+ */
 export function exportPublicCredential(
 	credential: ParsedCredential,
 ): CredentialIssueResponse {
@@ -234,6 +334,13 @@ export function exportPublicCredential(
 	};
 }
 
+/**
+ * Parses and verifies one active public credential descriptor.
+ *
+ * @param descriptor - The signed public credential fields to verify.
+ * @returns The verified active public credential.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 export async function parsePublicCredential(
 	descriptor: CredentialIssueResponse,
 ): Promise<PublicCredential> {
@@ -255,6 +362,16 @@ export async function parsePublicCredential(
 	return { payload, payloadBytes, signature };
 }
 
+/**
+ * Creates authentication headers for one signed request.
+ *
+ * @param credential - The credential that authenticates or decrypts the operation.
+ * @param method - The HTTP method that the signature authenticates.
+ * @param path - The request path or local file path for the operation.
+ * @param body - The exact request body bytes covered by the signature.
+ * @param now - The request timestamp in Unix milliseconds.
+ * @returns The request authentication headers.
+ */
 export async function signRequest(
 	credential: ParsedCredential,
 	method: string,
@@ -276,6 +393,16 @@ export async function signRequest(
 	});
 }
 
+/**
+ * Builds the canonical request authentication message.
+ *
+ * @param method - The HTTP method that the signature authenticates.
+ * @param path - The request path or local file path for the operation.
+ * @param timestamp - The signed request timestamp text.
+ * @param nonce - The unique AES-GCM or request nonce.
+ * @param body - The exact request body bytes covered by the signature.
+ * @returns The canonical message bytes.
+ */
 export async function requestSigningMessage(
 	method: string,
 	path: string,
@@ -289,6 +416,12 @@ export async function requestSigningMessage(
 	);
 }
 
+/**
+ * Encrypts and signs one environment bundle for its recipients.
+ *
+ * @param input - The validated operation data at this boundary.
+ * @returns The signed encrypted bundle draft.
+ */
 export async function sealBundle(input: {
 	project: string;
 	environment: string;
@@ -360,6 +493,14 @@ export async function sealBundle(input: {
 	};
 }
 
+/**
+ * Verifies and decrypts an accepted bundle for one recipient credential.
+ *
+ * @param bundle - The encrypted bundle or test draft for the operation.
+ * @param credential - The credential that authenticates or decrypts the operation.
+ * @returns The decrypted environment values.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 export async function openBundle(
 	bundle: SealedBundle,
 	credential: ParsedCredential,
@@ -431,15 +572,33 @@ export async function openBundle(
 		throw new Error("The decrypted environment bundle has an invalid shape.");
 	}
 	return Object.fromEntries(
-		Object.entries(parsed.values).map(([key, value]) => {
-			if (typeof value !== "string") {
-				throw new Error(`The decrypted value for ${key} is not a string.`);
-			}
-			return [key, value];
-		}),
+		Object.entries(parsed.values).map(
+			/**
+			 * Validates and returns one decrypted secret entry.
+			 *
+			 * @param entry - The decrypted secret name and value pair.
+			 * @returns The validated key and string value entry.
+			 * @throws {@link Error} When credential, key, or bundle data fails validation.
+			 */
+			([key, value]) => {
+				if (typeof value !== "string") {
+					throw new Error(`The decrypted value for ${key} is not a string.`);
+				}
+				return [key, value];
+			},
+		),
 	);
 }
 
+/**
+ * Encrypts plaintext with an AES-GCM key and nonce.
+ *
+ * @param keyBytes - The raw AES-GCM key bytes.
+ * @param nonce - The unique AES-GCM or request nonce.
+ * @param plaintext - The bytes to encrypt.
+ * @param additionalData - The optional bytes that authentication binds without encryption.
+ * @returns The authenticated ciphertext bytes.
+ */
 async function aesEncrypt(
 	keyBytes: Uint8Array,
 	nonce: Uint8Array,
@@ -468,6 +627,15 @@ async function aesEncrypt(
 	);
 }
 
+/**
+ * Decrypts authenticated ciphertext with an AES-GCM key and nonce.
+ *
+ * @param keyBytes - The raw AES-GCM key bytes.
+ * @param nonce - The unique AES-GCM or request nonce.
+ * @param ciphertext - The authenticated ciphertext to decrypt.
+ * @param additionalData - The optional bytes that authentication binds without encryption.
+ * @returns The decrypted plaintext bytes.
+ */
 async function aesDecrypt(
 	keyBytes: Uint8Array,
 	nonce: Uint8Array,
@@ -496,6 +664,12 @@ async function aesDecrypt(
 	);
 }
 
+/**
+ * Compresses bytes with the deflate format.
+ *
+ * @param bytes - The byte sequence to process.
+ * @returns The compressed bytes.
+ */
 async function compress(bytes: Uint8Array): Promise<Uint8Array> {
 	const stream = new Blob([toArrayBuffer(bytes)])
 		.stream()
@@ -503,6 +677,14 @@ async function compress(bytes: Uint8Array): Promise<Uint8Array> {
 	return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+/**
+ * Decompresses bounded deflate data into bytes.
+ *
+ * @param bytes - The byte sequence to process.
+ * @param maximumBytes - The maximum permitted decompressed byte count.
+ * @returns The decompressed bytes.
+ * @throws {@link Error} When credential, key, or bundle data fails validation.
+ */
 async function decompress(
 	bytes: Uint8Array,
 	maximumBytes: number,
@@ -528,6 +710,12 @@ async function decompress(
 	return concatBytes(...chunks);
 }
 
+/**
+ * Concatenates byte arrays in input order.
+ *
+ * @param values - The byte arrays or environment values for the operation.
+ * @returns One byte array with all input values.
+ */
 function concatBytes(...values: Uint8Array[]): Uint8Array {
 	const total = values.reduce((sum, value) => sum + value.byteLength, 0);
 	const output = new Uint8Array(total);
@@ -539,12 +727,26 @@ function concatBytes(...values: Uint8Array[]): Uint8Array {
 	return output;
 }
 
+/**
+ * Copies bytes into a standalone array buffer.
+ *
+ * @param bytes - The byte sequence to process.
+ * @returns A standalone copy of the bytes.
+ */
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 	const output = new Uint8Array(bytes.byteLength);
 	output.set(bytes);
 	return output.buffer;
 }
 
+/**
+ * Builds the authenticated key-wrapping context for one recipient.
+ *
+ * @param identifier - The stable credential or recipient identifier.
+ * @param ephemeralPublicKey - The ephemeral X25519 public key for this recipient.
+ * @param recipientPublicKey - The recipient X25519 public key bound to the wrapping context.
+ * @returns The encoded recipient context bytes.
+ */
 function recipientContext(
 	identifier: string,
 	ephemeralPublicKey: Uint8Array,

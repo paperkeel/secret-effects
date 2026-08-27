@@ -49,6 +49,14 @@ audit anchoring is not part of this version.
 The Global credential should remain outside CI after initial setup. CI uses one
 CI/CD credential. Each runtime receives one Environment credential.
 
+## Optional error monitoring
+
+Set `SENTRY_DSN` to enable Sentry error monitoring. The integration does not
+send request bodies, headers, cookies, query parameters, database values, local
+variables, user data, breadcrumbs, or performance traces. Error events contain
+exception messages and stack traces. Trust the selected Sentry organization
+with that diagnostic data.
+
 ## Known limits
 
 - A compromised publisher can upload harmful but correctly signed values.

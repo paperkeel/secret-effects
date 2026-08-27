@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "semark-protocol": {
+      "source": "bearfire-dev/semark-protocol",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/semark-protocol/SKILL.md",
+      "computedHash": "c765f46a8a2e1af4912c7cc32797b36e39ea72633d0132ba5ef9d123774d7f52"
+    }
+  }
+}

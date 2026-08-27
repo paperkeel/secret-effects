@@ -1,3 +1,11 @@
+/**
+ * Loads one validated environment from an encrypted Secret Effects bundle.
+ *
+ * @remarks
+ * Responsibility: Owns runtime credential selection, signed bundle retrieval, scope validation, decryption, and environment validation.
+ *
+ * Boundary: Accepts a repository configuration and readable credential. It does not publish or persist secret values.
+ */
 import { createEnv } from "@t3-oss/env-core";
 import * as Schema from "effect/Schema";
 import type { SecretEffectsConfig, InferConfig } from "@secret-effects/config";
@@ -14,6 +22,15 @@ export interface LoadEnvOptions {
 	fetch?: typeof globalThis.fetch;
 }
 
+/**
+ * Loads, decrypts, and validates one configured runtime environment.
+ *
+ * @typeParam Config - The repository configuration that determines the result shape.
+ * @param config - The repository configuration that defines the environment.
+ * @param options - The optional settings for the secret or runtime load.
+ * @returns The validated environment values.
+ * @throws {@link Error} When required deployment configuration is invalid.
+ */
 export async function loadEnv<Config extends SecretEffectsConfig>(
 	config: Config,
 	options: LoadEnvOptions = {},
@@ -89,6 +106,12 @@ export async function loadEnv<Config extends SecretEffectsConfig>(
 	return schema.parse(env) as InferConfig<Config>;
 }
 
+/**
+ * Reads the configured credential from the process environment.
+ *
+ * @returns The configured credential string.
+ * @throws {@link Error} When required deployment configuration is invalid.
+ */
 function readCredentialFromRuntime(): string {
 	const value =
 		typeof process === "undefined" ? undefined : process.env.SECRET_EFFECTS_KEY;
