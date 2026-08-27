@@ -4,11 +4,13 @@ import {
 	assembleCredential,
 	base64UrlToBytes,
 	bytesToHex,
-	canonicalJson,
 	deriveKeys,
+	exportPublicCredential,
 	generateMasterKey,
+	hexToBytes,
 	openBundle,
 	parseCredential,
+	parsePublicCredential,
 	sealBundle,
 	signRequest,
 } from "@secret-effects/crypto";
@@ -19,6 +21,7 @@ import type {
 	PublishBundleRequest,
 	SealedBundle,
 } from "@secret-effects/protocol";
+import { canonicalJson } from "@secret-effects/protocol";
 
 class CliError extends Data.TaggedError("CliError")<{ message: string }> {}
 
@@ -73,6 +76,14 @@ async function main(argv: readonly string[]): Promise<void> {
 	}
 	if (group === "key" && command === "list") {
 		await listPath("/v1/credentials");
+		return;
+	}
+	if (group === "key" && command === "public") {
+		writeJson(exportPublicCredential(await configuredCredential()));
+		return;
+	}
+	if (group === "key" && command === "inspect") {
+		writeJson((await configuredCredential()).payload);
 		return;
 	}
 	if (group === "key" && command === "revoke") {
@@ -285,10 +296,30 @@ async function publishBundle(args: readonly string[]): Promise<void> {
 	const valuesPath = requiredOption(args, "--values");
 	const schemaDigest = requiredOption(args, "--schema-digest");
 	const recipientPaths = options(args, "--recipient");
-	const recipients = [author];
+	const recipients = [
+		{
+			identifier: author.payload.identifier,
+			publicKey: author.keys.decryptPublicKey,
+		},
+	];
 	for (const path of recipientPaths) {
-		const rendered = await readTextFile(path);
-		recipients.push(await parseCredential(rendered.trim()));
+		const descriptor = parsePublicDescriptor(
+			JSON.parse(await readTextFile(path)),
+		);
+		const recipient = await parsePublicCredential(descriptor);
+		if (
+			recipient.payload.project !== author.payload.project ||
+			recipient.payload.decryptPublicKey === null ||
+			!["project", "environment"].includes(recipient.payload.type)
+		) {
+			throw new CliError({
+				message: `${path} is not a readable credential for this project.`,
+			});
+		}
+		recipients.push({
+			identifier: recipient.payload.identifier,
+			publicKey: hexToBytes(recipient.payload.decryptPublicKey),
+		});
 	}
 	const rawValues: unknown = JSON.parse(await readTextFile(valuesPath));
 	if (
@@ -313,10 +344,7 @@ async function publishBundle(args: readonly string[]): Promise<void> {
 		environment,
 		schemaDigest,
 		values,
-		recipients: recipients.map((recipient) => ({
-			identifier: recipient.payload.identifier,
-			publicKey: recipient.keys.decryptPublicKey,
-		})),
+		recipients,
 		author,
 	});
 	const request: PublishBundleRequest = {
@@ -400,6 +428,20 @@ async function listPath(
 
 function writeJson(value: unknown): void {
 	process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function parsePublicDescriptor(value: unknown): CredentialIssueResponse {
+	if (
+		typeof value !== "object" ||
+		value === null ||
+		!("payload" in value) ||
+		typeof value.payload !== "string" ||
+		!("signature" in value) ||
+		typeof value.signature !== "string"
+	) {
+		throw new CliError({ message: "The public credential file is invalid." });
+	}
+	return { payload: value.payload, signature: value.signature };
 }
 
 async function authenticatedFetch(
@@ -494,6 +536,8 @@ function printHelp(): void {
 		`  key issue --type <type> [--project <name>] [--environment <name>]\n`,
 	);
 	process.stdout.write(`  key list\n`);
+	process.stdout.write(`  key public\n`);
+	process.stdout.write(`  key inspect\n`);
 	process.stdout.write(`  key revoke --id <id> --reason <reason>\n`);
 	process.stdout.write(
 		`  project create --name <name> [--display-name <name>]\n`,

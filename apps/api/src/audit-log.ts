@@ -41,58 +41,62 @@ export class AuditLog extends DurableObject<ApiEnv> {
 	}
 
 	async append(input: AuditInput): Promise<AuditEvent> {
-		const existing = this.ctx.storage.sql
-			.exec<AuditRow>(
-				"SELECT * FROM audit_events WHERE event_id = ?",
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const existing = this.ctx.storage.sql
+				.exec<AuditRow>(
+					"SELECT * FROM audit_events WHERE event_id = ?",
+					input.eventId,
+				)
+				.toArray()[0];
+			if (existing !== undefined) {
+				return fromRow(existing);
+			}
+			const previousHash =
+				this.ctx.storage.sql
+					.exec<{
+						event_hash: string;
+					}>(
+						"SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1",
+					)
+					.toArray()[0]?.event_hash ?? "0".repeat(64);
+			const eventHash = await digestHex(
+				[
+					previousHash,
+					input.eventId,
+					input.actor,
+					input.action,
+					input.project ?? "",
+					input.environment ?? "",
+					input.subject ?? "",
+					input.detailsDigest,
+					String(input.createdAt),
+				].join("\n"),
+			);
+			this.ctx.storage.sql.exec(
+				`INSERT INTO audit_events(event_id, previous_hash, event_hash, actor, action, project, environment, subject, details_digest, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				input.eventId,
-			)
-			.toArray()[0];
-		if (existing !== undefined) {
-			return fromRow(existing);
-		}
-		const previousHash =
-			this.ctx.storage.sql
-				.exec<{
-					event_hash: string;
-				}>("SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1")
-				.toArray()[0]?.event_hash ?? "0".repeat(64);
-		const eventHash = await digestHex(
-			[
 				previousHash,
-				input.eventId,
+				eventHash,
 				input.actor,
 				input.action,
-				input.project ?? "",
-				input.environment ?? "",
-				input.subject ?? "",
+				input.project,
+				input.environment,
+				input.subject,
 				input.detailsDigest,
-				String(input.createdAt),
-			].join("\n"),
-		);
-		this.ctx.storage.sql.exec(
-			`INSERT INTO audit_events(event_id, previous_hash, event_hash, actor, action, project, environment, subject, details_digest, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			input.eventId,
-			previousHash,
-			eventHash,
-			input.actor,
-			input.action,
-			input.project,
-			input.environment,
-			input.subject,
-			input.detailsDigest,
-			input.createdAt,
-		);
-		const created = this.ctx.storage.sql
-			.exec<AuditRow>(
-				"SELECT * FROM audit_events WHERE event_id = ?",
-				input.eventId,
-			)
-			.toArray()[0];
-		if (created === undefined) {
-			throw new Error("The audit event was not stored.");
-		}
-		return fromRow(created);
+				input.createdAt,
+			);
+			const created = this.ctx.storage.sql
+				.exec<AuditRow>(
+					"SELECT * FROM audit_events WHERE event_id = ?",
+					input.eventId,
+				)
+				.toArray()[0];
+			if (created === undefined) {
+				throw new Error("The audit event was not stored.");
+			}
+			return fromRow(created);
+		});
 	}
 
 	async list(

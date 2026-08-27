@@ -19,6 +19,7 @@ function App() {
 	const [selected, setSelected] = useState(0);
 	useKeyboard((event) => {
 		if (event.name === "q" || event.name === "escape") {
+			renderer.destroy();
 			process.exit(0);
 		}
 		if (event.name === "left" || event.name === "up") {

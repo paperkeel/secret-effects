@@ -5,6 +5,14 @@ export const MASTER_KEY_BYTES = 64;
 export const MASTER_KEY_HEX_LENGTH = MASTER_KEY_BYTES * 2;
 export const CHECKSUM_HEX_LENGTH = 32;
 export const DEFAULT_ENVIRONMENTS = ["local", "dev", "production"] as const;
+export const MACHINE_NAME_PATTERN = /^[a-z][a-z0-9]*$/;
+export const ENVIRONMENT_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+const MachineName = Schema.String.check(Schema.isPattern(MACHINE_NAME_PATTERN));
+const CredentialIdentifier = Schema.String.check(
+	Schema.isPattern(/^[0-9a-f]{32}$/),
+);
+const PublicKey = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
 export const CredentialType = Schema.Literals([
 	"global",
@@ -19,13 +27,13 @@ export const CredentialPayload = Schema.Struct({
 	version: Schema.Literal(1),
 	api: Schema.String,
 	issuer: Schema.String,
-	issuerPublicKey: Schema.String,
+	issuerPublicKey: PublicKey,
 	type: CredentialType,
-	project: Schema.NullOr(Schema.String),
-	environment: Schema.NullOr(Schema.String),
-	identifier: Schema.String,
-	authPublicKey: Schema.String,
-	decryptPublicKey: Schema.NullOr(Schema.String),
+	project: Schema.NullOr(MachineName),
+	environment: Schema.NullOr(MachineName),
+	identifier: CredentialIdentifier,
+	authPublicKey: PublicKey,
+	decryptPublicKey: Schema.NullOr(PublicKey),
 	issuedAt: Schema.Number,
 	notBefore: Schema.Number,
 	expiresAt: Schema.NullOr(Schema.Number),
@@ -34,10 +42,10 @@ export type CredentialPayload = typeof CredentialPayload.Type;
 
 export const CredentialIssueRequest = Schema.Struct({
 	type: CredentialType,
-	project: Schema.NullOr(Schema.String),
-	environment: Schema.NullOr(Schema.String),
-	authPublicKey: Schema.String,
-	decryptPublicKey: Schema.NullOr(Schema.String),
+	project: Schema.NullOr(MachineName),
+	environment: Schema.NullOr(MachineName),
+	authPublicKey: PublicKey,
+	decryptPublicKey: Schema.NullOr(PublicKey),
 	expiresAt: Schema.NullOr(Schema.Number),
 });
 export type CredentialIssueRequest = typeof CredentialIssueRequest.Type;
@@ -49,7 +57,7 @@ export const CredentialIssueResponse = Schema.Struct({
 export type CredentialIssueResponse = typeof CredentialIssueResponse.Type;
 
 export const SealedRecipient = Schema.Struct({
-	identifier: Schema.String,
+	identifier: CredentialIdentifier,
 	ephemeralPublicKey: Schema.String,
 	nonce: Schema.String,
 	wrappedKey: Schema.String,
@@ -67,8 +75,10 @@ export const SealedBundle = Schema.Struct({
 	nonce: Schema.String,
 	ciphertext: Schema.String,
 	recipients: Schema.Array(SealedRecipient),
-	author: Schema.String,
+	author: CredentialIdentifier,
+	authorPublicKey: PublicKey,
 	signature: Schema.String,
+	serviceSignature: Schema.NullOr(Schema.String),
 });
 export type SealedBundle = typeof SealedBundle.Type;
 
@@ -80,13 +90,13 @@ export const PublishBundleRequest = Schema.Struct({
 export type PublishBundleRequest = typeof PublishBundleRequest.Type;
 
 export const ProjectCreateRequest = Schema.Struct({
-	name: Schema.String,
+	name: MachineName,
 	displayName: Schema.String,
 });
 export type ProjectCreateRequest = typeof ProjectCreateRequest.Type;
 
 export const EnvironmentCreateRequest = Schema.Struct({
-	name: Schema.String,
+	name: MachineName,
 });
 export type EnvironmentCreateRequest = typeof EnvironmentCreateRequest.Type;
 
@@ -109,15 +119,26 @@ export const PurgeMessage = Schema.Struct({
 });
 export type PurgeMessage = typeof PurgeMessage.Type;
 
-export const MACHINE_NAME_PATTERN = /^[a-z][a-z0-9]*$/;
-export const ENVIRONMENT_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
-
 export function assertMachineName(value: string, label: string): void {
 	if (!MACHINE_NAME_PATTERN.test(value)) {
 		throw new Error(
 			`${label} must contain lowercase ASCII letters and numbers only.`,
 		);
 	}
+}
+
+export function canonicalJson(value: unknown): string {
+	if (value === null || typeof value !== "object") {
+		return JSON.stringify(value);
+	}
+	if (Array.isArray(value)) {
+		return `[${value.map(canonicalJson).join(",")}]`;
+	}
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record)
+		.sort()
+		.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+		.join(",")}}`;
 }
 
 export function environmentCacheTag(

@@ -7,7 +7,6 @@ import {
 	base64UrlToBytes,
 	bytesToBase64Url,
 	bytesToHex,
-	canonicalJson,
 	encodeCredentialPayload,
 	hexToBytes,
 	requestSigningMessage,
@@ -20,6 +19,7 @@ import {
 	EnvironmentCreateRequest,
 	assertMachineName,
 	bundleObjectKey,
+	canonicalJson,
 	decodeCredentialIssueRequest,
 	decodeCredentialRevokeRequest,
 	decodeProjectCreateRequest,
@@ -535,7 +535,7 @@ async function persistIssuedCredential(
 	const payloadBytes = await encodeCredentialPayload(payload);
 	const signature = signPayload(payloadBytes, issuerPrivateKey);
 	await appendAudit(env, issuedBy, {
-		action: "credential.issue",
+		action: "credential.issue.authorized",
 		project: issue.project,
 		environment: issue.environment,
 		subject: identifier,
@@ -664,6 +664,20 @@ async function registerSchema(
 	body: Uint8Array,
 ): Promise<Response> {
 	const input = decodeSchemaManifestRequest(parseJson(body));
+	if (
+		typeof input.manifest !== "object" ||
+		input.manifest === null ||
+		!("version" in input.manifest) ||
+		input.manifest.version !== 1 ||
+		!("project" in input.manifest) ||
+		input.manifest.project !== project
+	) {
+		throw new ApiError({
+			status: 400,
+			code: "schema_scope_mismatch",
+			message: "The schema manifest does not match the project.",
+		});
+	}
 	if (!/^[0-9a-f]{64}$/.test(input.digest)) {
 		throw new ApiError({
 			status: 400,
@@ -744,6 +758,16 @@ async function publishBundle(
 			message: "The bundle author does not match the request credential.",
 		});
 	}
+	if (
+		input.bundle.authorPublicKey !== actor.authPublicKey ||
+		input.bundle.serviceSignature !== null
+	) {
+		throw new ApiError({
+			status: 400,
+			code: "invalid_bundle_attestation",
+			message: "The bundle attestation fields are invalid.",
+		});
+	}
 	const schema = await env.CATALOG.prepare(
 		"SELECT digest FROM schema_manifests WHERE project = ? AND digest = ?",
 	)
@@ -756,7 +780,11 @@ async function publishBundle(
 			message: "Register the repository schema before bundle publication.",
 		});
 	}
-	const { signature, ...unsigned } = input.bundle;
+	const {
+		signature,
+		serviceSignature: _serviceSignature,
+		...unsigned
+	} = input.bundle;
 	if (
 		!verifyPayload(
 			encoder.encode(canonicalJson(unsigned)),
@@ -770,8 +798,17 @@ async function publishBundle(
 			message: "The bundle signature is invalid.",
 		});
 	}
-	const objectKey = bundleObjectKey(input.bundle);
-	const bundleText = JSON.stringify(input.bundle);
+	const acceptedBundle = {
+		...input.bundle,
+		serviceSignature: bytesToBase64Url(
+			signPayload(
+				encoder.encode(canonicalJson(input.bundle)),
+				hexToBytes(env.ISSUER_PRIVATE_KEY),
+			),
+		),
+	};
+	const objectKey = bundleObjectKey(acceptedBundle);
+	const bundleText = JSON.stringify(acceptedBundle);
 	const digest = bytesToHex(sha256(encoder.encode(bundleText)));
 	let result;
 	try {
@@ -780,8 +817,8 @@ async function publishBundle(
 			objectKey,
 			bundle: bundleText,
 			baseVersion: input.baseVersion,
-			contentVersion: input.bundle.contentVersion,
-			envelopeVersion: input.bundle.envelopeVersion,
+			contentVersion: acceptedBundle.contentVersion,
+			envelopeVersion: acceptedBundle.envelopeVersion,
 			idempotencyKey: input.idempotencyKey,
 			actor: actor.identifier,
 			digest,

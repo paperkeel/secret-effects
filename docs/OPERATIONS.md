@@ -51,8 +51,10 @@ the file. Do not configure the Global credential in CI.
 
 ```sh
 export SECRET_EFFECTS_KEY='<global-or-cicd-credential>'
-secreteffects project create --name example --display-name "Example"
-secreteffects key issue --type project --project example
+node apps/cli/dist/secreteffects.js project create \
+  --name example --display-name "Example"
+node apps/cli/dist/secreteffects.js key issue \
+  --type project --project example
 ```
 
 The create operation also creates `local`, `dev`, and `production`.
@@ -73,20 +75,27 @@ Create an Environment credential for each runtime. Provide its credential file
 as a publication recipient.
 
 ```sh
-secreteffects key issue \
+umask 077
+node apps/cli/dist/secreteffects.js key issue \
   --type environment \
   --project example \
   --environment production > production.secret-effects-key
+chmod 600 production.secret-effects-key
 
-secreteffects bundle publish \
+SECRET_EFFECTS_KEY="$(<production.secret-effects-key)" \
+  node apps/cli/dist/secreteffects.js key public \
+  > production.public-credential.json
+
+node apps/cli/dist/secreteffects.js bundle publish \
   --environment production \
   --values production.values.json \
   --schema-digest <schema-digest> \
-  --recipient production.secret-effects-key
+  --recipient production.public-credential.json
 ```
 
-Delete the plaintext values file after the publication procedure. Prefer a
-process-managed temporary file for automation.
+The publication process receives only a signed public descriptor. It does not
+receive the Environment credential master key. Delete the plaintext values file
+after publication. Prefer a process-managed temporary file for automation.
 
 ## Runtime use
 
@@ -102,7 +111,7 @@ service URL and scope from the credential.
 ## Revoke a credential
 
 ```sh
-secreteffects key revoke \
+node apps/cli/dist/secreteffects.js key revoke \
   --id <credential-identifier> \
   --reason "Replaced during scheduled rotation"
 ```
@@ -113,12 +122,13 @@ revoke only Environment credentials in its project.
 ## Inspect and purge
 
 ```sh
-secreteffects project list
-secreteffects environment list --project example
-secreteffects key list
-secreteffects schema list --project example
-secreteffects audit list --project example
-secreteffects cache purge --project example --environment production
+node apps/cli/dist/secreteffects.js project list
+node apps/cli/dist/secreteffects.js environment list --project example
+node apps/cli/dist/secreteffects.js key list
+node apps/cli/dist/secreteffects.js schema list --project example
+node apps/cli/dist/secreteffects.js audit list --project example
+node apps/cli/dist/secreteffects.js cache purge \
+  --project example --environment production
 ```
 
 Inspection commands return JSON. They never return private keys or decrypted

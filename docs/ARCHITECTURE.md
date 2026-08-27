@@ -41,12 +41,13 @@ The checksum detects common copy errors before any network request.
 4. The client validates the complete environment.
 5. The client creates one random AES-256-GCM data key.
 6. The client encrypts the complete environment once.
-7. The client wraps that data key for each approved recipient.
+7. The client wraps that data key for each signed public recipient descriptor.
 8. The client signs the envelope with its Project credential.
 9. The API checks the signature, schema digest, scope, and base version.
-10. The project's Durable Object serializes the publication.
-11. R2 stores the encrypted envelope.
-12. The service purges the environment cache tag.
+10. The API adds an issuer-signed acceptance proof.
+11. The project's Durable Object serializes the publication.
+12. R2 stores the encrypted envelope.
+13. The service purges the environment cache tag.
 
 The API uses optimistic base versions and idempotency keys. These fields prevent
 lost updates and duplicate publications.
@@ -58,8 +59,9 @@ lost updates and duplicate publications.
 3. D1 checks status, scope, expiration, and replay nonce.
 4. The Worker reads the encrypted bundle from cache or R2.
 5. The Worker returns the complete encrypted bundle.
-6. The client unwraps the data key and decrypts the bundle.
-7. Zod and `@t3-oss/env-core` validate the complete result.
+6. The client verifies the issuer acceptance and Project author signatures.
+7. The client unwraps the data key and decrypts the bundle.
+8. Zod and `@t3-oss/env-core` validate the complete result.
 
 Decrypted values exist only in client request memory. The service cache contains
 the encrypted response body. Its lifetime is five minutes.

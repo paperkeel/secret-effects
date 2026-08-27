@@ -35,6 +35,8 @@ export default Alchemy.Stack(
 		}
 		const production = stage === "prod";
 		const suffix = production ? "" : `-${stage}`;
+		const deploymentSha =
+			process.env.DEPLOY_SHA ?? process.env.GITHUB_SHA ?? "local";
 
 		const catalog = yield* Cloudflare.D1.Database("Catalog", {
 			name: `secret-effects-catalog${suffix}`,
@@ -87,8 +89,8 @@ export default Alchemy.Stack(
 				ISSUER_ID: "secreteffectsroot2026",
 			},
 			version: {
-				message: process.env.GITHUB_SHA ?? "local deployment",
-				tag: process.env.GITHUB_SHA ?? "local",
+				message: deploymentSha === "local" ? "local deployment" : deploymentSha,
+				tag: deploymentSha,
 			},
 		}).pipe(adopt(production), retain());
 

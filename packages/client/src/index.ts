@@ -1,13 +1,13 @@
 import { createEnv } from "@t3-oss/env-core";
 import * as Schema from "effect/Schema";
 import type { SecretEffectsConfig, InferConfig } from "@secret-effects/config";
-import { schemaForEnvironment } from "@secret-effects/config";
+import { schemaDigest, schemaForEnvironment } from "@secret-effects/config";
 import {
 	openBundle,
 	parseCredential,
 	signRequest,
 } from "@secret-effects/crypto";
-import { SealedBundle } from "@secret-effects/protocol";
+import { SealedBundle, assertMachineName } from "@secret-effects/protocol";
 
 export interface LoadEnvOptions {
 	credential?: string;
@@ -37,10 +37,20 @@ export async function loadEnv<Config extends SecretEffectsConfig>(
 	if (environment === null) {
 		throw new Error("The credential does not select an environment.");
 	}
-	const path = `/v1/projects/${config.project}/environments/${environment}/bundle`;
+	assertMachineName(environment, "The credential environment");
+	const api = new URL(credential.payload.api);
+	if (
+		api.protocol !== "https:" ||
+		api.pathname !== "/" ||
+		api.search !== "" ||
+		api.hash !== ""
+	) {
+		throw new Error("The credential API must contain an HTTPS origin.");
+	}
+	const path = `/v1/projects/${encodeURIComponent(config.project)}/environments/${encodeURIComponent(environment)}/bundle`;
 	const headers = await signRequest(credential, "GET", path, new Uint8Array());
 	const response = await (options.fetch ?? globalThis.fetch)(
-		`${credential.payload.api}${path}`,
+		`${api.origin}${path}`,
 		{
 			headers,
 		},
@@ -49,16 +59,31 @@ export async function loadEnv<Config extends SecretEffectsConfig>(
 		throw new Error(`Secret Effects returned HTTP ${response.status}.`);
 	}
 	const bundle = Schema.decodeUnknownSync(SealedBundle)(await response.json());
+	const expectedSchemaDigest = await schemaDigest(config);
+	if (
+		bundle.project !== config.project ||
+		bundle.environment !== environment ||
+		bundle.schemaDigest !== expectedSchemaDigest
+	) {
+		throw new Error(
+			"The bundle does not match the requested repository scope.",
+		);
+	}
 	const values = await openBundle(bundle, credential);
 	const schema = schemaForEnvironment(config, environment);
+	const runtimeEnv = Object.fromEntries(
+		Object.entries(values).filter(([, value]) => value !== ""),
+	);
 	const env = createEnv({
 		server: Object.fromEntries(
 			Object.entries(config.secrets).map(([name, definition]) => [
 				name,
-				definition.schema,
+				definition.requiredIn.includes(environment)
+					? definition.schema
+					: definition.schema.optional(),
 			]),
 		),
-		runtimeEnv: values,
+		runtimeEnv,
 		emptyStringAsUndefined: true,
 	});
 	return schema.parse(env) as InferConfig<Config>;

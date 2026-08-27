@@ -1,5 +1,6 @@
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
+import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { sha512 } from "@noble/hashes/sha2.js";
 import bs58 from "bs58";
@@ -11,6 +12,8 @@ import {
 	CredentialPayload,
 	MASTER_KEY_BYTES,
 	MASTER_KEY_HEX_LENGTH,
+	canonicalJson,
+	type CredentialIssueResponse,
 	type SealedBundle,
 	type SealedRecipient,
 } from "@secret-effects/protocol";
@@ -20,6 +23,7 @@ const decoder = new TextDecoder();
 const AUTH_INFO = encoder.encode("secret-effects/v1/authentication");
 const DECRYPT_INFO = encoder.encode("secret-effects/v1/decryption");
 const WRAP_INFO = encoder.encode("secret-effects/v1/wrapping");
+const MAX_CREDENTIAL_PAYLOAD_BYTES = 16 * 1024;
 const CREDENTIAL_PATTERN = new RegExp(
 	`^${CREDENTIAL_PREFIX}_payload:([1-9A-HJ-NP-Za-km-z]+)_signature:([1-9A-HJ-NP-Za-km-z]+)_checksum:([0-9a-f]{${CHECKSUM_HEX_LENGTH}})_key:([0-9a-f]{${MASTER_KEY_HEX_LENGTH}})$`,
 );
@@ -38,6 +42,12 @@ export interface ParsedCredential {
 	masterKey: Uint8Array;
 	keys: DerivedKeys;
 	rendered: string;
+}
+
+export interface PublicCredential {
+	payload: CredentialPayload;
+	payloadBytes: Uint8Array;
+	signature: Uint8Array;
 }
 
 export interface BundlePlaintext {
@@ -116,10 +126,17 @@ export async function encodeCredentialPayload(
 export async function decodeCredentialPayload(
 	bytes: Uint8Array,
 ): Promise<CredentialPayload> {
+	if (bytes.byteLength > MAX_CREDENTIAL_PAYLOAD_BYTES + 1) {
+		throw new Error("The credential payload is too large.");
+	}
 	const codec = bytes[0];
 	const body = bytes.slice(1);
 	const raw =
-		codec === 1 ? await decompress(body) : codec === 0 ? body : undefined;
+		codec === 1
+			? await decompress(body, MAX_CREDENTIAL_PAYLOAD_BYTES)
+			: codec === 0
+				? body
+				: undefined;
 	if (raw === undefined) {
 		throw new Error("The credential payload uses an unknown codec.");
 	}
@@ -208,6 +225,36 @@ export async function parseCredential(
 	return { payload, payloadBytes, signature, masterKey, keys, rendered };
 }
 
+export function exportPublicCredential(
+	credential: ParsedCredential,
+): CredentialIssueResponse {
+	return {
+		payload: bytesToBase64Url(credential.payloadBytes),
+		signature: bytesToBase64Url(credential.signature),
+	};
+}
+
+export async function parsePublicCredential(
+	descriptor: CredentialIssueResponse,
+): Promise<PublicCredential> {
+	const payloadBytes = base64UrlToBytes(descriptor.payload);
+	const signature = base64UrlToBytes(descriptor.signature);
+	const payload = await decodeCredentialPayload(payloadBytes);
+	if (
+		!verifyPayload(payloadBytes, signature, hexToBytes(payload.issuerPublicKey))
+	) {
+		throw new Error("The public credential signature is invalid.");
+	}
+	const now = Date.now();
+	if (
+		now < payload.notBefore ||
+		(payload.expiresAt !== null && now >= payload.expiresAt)
+	) {
+		throw new Error("The public credential is not active.");
+	}
+	return { payload, payloadBytes, signature };
+}
+
 export async function signRequest(
 	credential: ParsedCredential,
 	method: string,
@@ -266,7 +313,17 @@ export async function sealBundle(input: {
 		);
 		const wrappingKey = hkdf(sha256, shared, undefined, WRAP_INFO, 32);
 		const wrapNonce = randomBytes(12);
-		const wrappedKey = await aesEncrypt(wrappingKey, wrapNonce, dataKey);
+		const context = recipientContext(
+			recipient.identifier,
+			ephemeralPublicKey,
+			recipient.publicKey,
+		);
+		const wrappedKey = await aesEncrypt(
+			wrappingKey,
+			wrapNonce,
+			dataKey,
+			context,
+		);
 		recipients.push({
 			identifier: recipient.identifier,
 			ephemeralPublicKey: bytesToBase64Url(ephemeralPublicKey),
@@ -274,7 +331,7 @@ export async function sealBundle(input: {
 			wrappedKey: bytesToBase64Url(wrappedKey),
 		});
 	}
-	const contentVersion = bytesToHex(sha256(plaintext));
+	const contentVersion = bytesToHex(hmac(sha256, dataKey, plaintext));
 	const envelopeVersion = bytesToHex(
 		sha256(encoder.encode(JSON.stringify(recipients))),
 	);
@@ -290,18 +347,50 @@ export async function sealBundle(input: {
 		ciphertext: bytesToBase64Url(ciphertext),
 		recipients,
 		author: input.author.payload.identifier,
+		authorPublicKey: bytesToHex(input.author.keys.authPublicKey),
 	};
 	const signature = signPayload(
 		encoder.encode(canonicalJson(unsigned)),
 		input.author.keys.authPrivateKey,
 	);
-	return { ...unsigned, signature: bytesToBase64Url(signature) };
+	return {
+		...unsigned,
+		signature: bytesToBase64Url(signature),
+		serviceSignature: null,
+	};
 }
 
 export async function openBundle(
 	bundle: SealedBundle,
 	credential: ParsedCredential,
 ): Promise<Record<string, string>> {
+	if (bundle.serviceSignature === null) {
+		throw new Error("The bundle has no service acceptance signature.");
+	}
+	const accepted = { ...bundle, serviceSignature: null };
+	if (
+		!verifyPayload(
+			encoder.encode(canonicalJson(accepted)),
+			base64UrlToBytes(bundle.serviceSignature),
+			hexToBytes(credential.payload.issuerPublicKey),
+		)
+	) {
+		throw new Error("The bundle service signature is invalid.");
+	}
+	const {
+		signature,
+		serviceSignature: _serviceSignature,
+		...authorSigned
+	} = bundle;
+	if (
+		!verifyPayload(
+			encoder.encode(canonicalJson(authorSigned)),
+			base64UrlToBytes(signature),
+			hexToBytes(bundle.authorPublicKey),
+		)
+	) {
+		throw new Error("The bundle author signature is invalid.");
+	}
 	const recipient = bundle.recipients.find(
 		(candidate) => candidate.identifier === credential.payload.identifier,
 	);
@@ -315,10 +404,16 @@ export async function openBundle(
 		base64UrlToBytes(recipient.ephemeralPublicKey),
 	);
 	const wrappingKey = hkdf(sha256, shared, undefined, WRAP_INFO, 32);
+	const context = recipientContext(
+		recipient.identifier,
+		base64UrlToBytes(recipient.ephemeralPublicKey),
+		credential.keys.decryptPublicKey,
+	);
 	const dataKey = await aesDecrypt(
 		wrappingKey,
 		base64UrlToBytes(recipient.nonce),
 		base64UrlToBytes(recipient.wrappedKey),
+		context,
 	);
 	const plaintext = await aesDecrypt(
 		dataKey,
@@ -345,24 +440,11 @@ export async function openBundle(
 	);
 }
 
-export function canonicalJson(value: unknown): string {
-	if (value === null || typeof value !== "object") {
-		return JSON.stringify(value);
-	}
-	if (Array.isArray(value)) {
-		return `[${value.map(canonicalJson).join(",")}]`;
-	}
-	const record = value as Record<string, unknown>;
-	return `{${Object.keys(record)
-		.sort()
-		.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-		.join(",")}}`;
-}
-
 async function aesEncrypt(
 	keyBytes: Uint8Array,
 	nonce: Uint8Array,
 	plaintext: Uint8Array,
+	additionalData?: Uint8Array,
 ): Promise<Uint8Array> {
 	const key = await crypto.subtle.importKey(
 		"raw",
@@ -373,7 +455,13 @@ async function aesEncrypt(
 	);
 	return new Uint8Array(
 		await crypto.subtle.encrypt(
-			{ name: "AES-GCM", iv: toArrayBuffer(nonce) },
+			{
+				name: "AES-GCM",
+				iv: toArrayBuffer(nonce),
+				...(additionalData === undefined
+					? {}
+					: { additionalData: toArrayBuffer(additionalData) }),
+			},
 			key,
 			toArrayBuffer(plaintext),
 		),
@@ -384,6 +472,7 @@ async function aesDecrypt(
 	keyBytes: Uint8Array,
 	nonce: Uint8Array,
 	ciphertext: Uint8Array,
+	additionalData?: Uint8Array,
 ): Promise<Uint8Array> {
 	const key = await crypto.subtle.importKey(
 		"raw",
@@ -394,7 +483,13 @@ async function aesDecrypt(
 	);
 	return new Uint8Array(
 		await crypto.subtle.decrypt(
-			{ name: "AES-GCM", iv: toArrayBuffer(nonce) },
+			{
+				name: "AES-GCM",
+				iv: toArrayBuffer(nonce),
+				...(additionalData === undefined
+					? {}
+					: { additionalData: toArrayBuffer(additionalData) }),
+			},
 			key,
 			toArrayBuffer(ciphertext),
 		),
@@ -408,11 +503,29 @@ async function compress(bytes: Uint8Array): Promise<Uint8Array> {
 	return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function decompress(bytes: Uint8Array): Promise<Uint8Array> {
+async function decompress(
+	bytes: Uint8Array,
+	maximumBytes: number,
+): Promise<Uint8Array> {
 	const stream = new Blob([toArrayBuffer(bytes)])
 		.stream()
 		.pipeThrough(new DecompressionStream("deflate"));
-	return new Uint8Array(await new Response(stream).arrayBuffer());
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	while (true) {
+		const result = await reader.read();
+		if (result.done) {
+			break;
+		}
+		total += result.value.byteLength;
+		if (total > maximumBytes) {
+			await reader.cancel();
+			throw new Error("The decompressed credential payload is too large.");
+		}
+		chunks.push(result.value);
+	}
+	return concatBytes(...chunks);
 }
 
 function concatBytes(...values: Uint8Array[]): Uint8Array {
@@ -430,4 +543,19 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 	const output = new Uint8Array(bytes.byteLength);
 	output.set(bytes);
 	return output.buffer;
+}
+
+function recipientContext(
+	identifier: string,
+	ephemeralPublicKey: Uint8Array,
+	recipientPublicKey: Uint8Array,
+): Uint8Array {
+	return encoder.encode(
+		[
+			"secret-effects/v1/recipient",
+			identifier,
+			bytesToHex(ephemeralPublicKey),
+			bytesToHex(recipientPublicKey),
+		].join("\n"),
+	);
 }

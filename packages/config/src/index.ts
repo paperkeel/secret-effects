@@ -4,6 +4,7 @@ import {
 	DEFAULT_ENVIRONMENTS,
 	ENVIRONMENT_KEY_PATTERN,
 	assertMachineName,
+	canonicalJson,
 } from "@secret-effects/protocol";
 
 export interface SecretOptions {
@@ -199,18 +200,4 @@ function resolveValue(
 	const resolved = resolveValue(name, source, definition, values, visited);
 	visited.delete(marker);
 	return resolved;
-}
-
-function canonicalJson(value: unknown): string {
-	if (value === null || typeof value !== "object") {
-		return JSON.stringify(value);
-	}
-	if (Array.isArray(value)) {
-		return `[${value.map(canonicalJson).join(",")}]`;
-	}
-	const record = value as Record<string, unknown>;
-	return `{${Object.keys(record)
-		.sort((left, right) => left.localeCompare(right))
-		.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-		.join(",")}}`;
 }
