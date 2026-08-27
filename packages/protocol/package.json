@@ -1,0 +1,12 @@
+{
+	"name": "@secret-effects/protocol",
+	"version": "0.1.0",
+	"type": "module",
+	"license": "MIT",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"effect": "4.0.0-rc.112"
+	}
+}

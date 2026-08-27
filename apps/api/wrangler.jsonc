@@ -1,0 +1,60 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "secret-effects-api-local",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-27",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true,
+	},
+	"d1_databases": [
+		{
+			"binding": "CATALOG",
+			"database_name": "secret-effects-catalog-local",
+			"database_id": "00000000-0000-0000-0000-000000000001",
+			"migrations_dir": "../../migrations",
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "BUNDLES",
+			"bucket_name": "secret-effects-bundles-local",
+		},
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "PURGE_QUEUE",
+				"queue": "secret-effects-purge-local",
+			},
+		],
+		"consumers": [
+			{
+				"queue": "secret-effects-purge-local",
+				"max_batch_size": 10,
+				"max_retries": 5,
+			},
+		],
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "PROJECTS",
+				"class_name": "ProjectState",
+			},
+			{
+				"name": "AUDIT",
+				"class_name": "AuditLog",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["ProjectState", "AuditLog"],
+		},
+	],
+	"vars": {
+		"ISSUER_ID": "secreteffectslocal",
+	},
+}

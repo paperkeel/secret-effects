@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    environment: release
+    steps:
+      - name: Check out the signed tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check the signed tag and version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")"
+          test "$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).object.type)' "$tag_object")" = "tag" || { echo "Use an annotated tag." >&2; exit 1; }
+          tag_sha="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).object.sha)' "$tag_object")"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.verified')" = "true" || { echo "Use a verified signed tag." >&2; exit 1; }
+          test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME" || { echo "The package version must match the tag." >&2; exit 1; }
+
+      - name: Check and build
+        run: |
+          pnpm check
+          pnpm build
+
+      - name: Create the release archive
+        id: archive
+        run: |
+          mkdir -p dist
+          archive="dist/secreteffects-${GITHUB_REF_NAME#v}-node.tar.gz"
+          tar -czf "$archive" -C apps/cli/dist secreteffects.js
+          sha256sum "$archive" > "$archive.sha256"
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the release archive
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.archive.outputs.path }}
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.archive.outputs.path }}" \
+            "${{ steps.archive.outputs.path }}.sha256" \
+            --generate-notes \
+            --verify-tag

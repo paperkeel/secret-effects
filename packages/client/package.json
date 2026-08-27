@@ -1,0 +1,16 @@
+{
+	"name": "@secret-effects/client",
+	"version": "0.1.0",
+	"type": "module",
+	"license": "MIT",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@secret-effects/config": "workspace:*",
+		"@secret-effects/crypto": "workspace:*",
+		"@secret-effects/protocol": "workspace:*",
+		"@t3-oss/env-core": "0.13.11",
+		"effect": "4.0.0-rc.112"
+	}
+}

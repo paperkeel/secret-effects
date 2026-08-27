@@ -1,0 +1,13 @@
+{
+	"name": "@secret-effects/api",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"@noble/curves": "2.0.1",
+		"@noble/hashes": "2.0.1",
+		"@secret-effects/crypto": "workspace:*",
+		"@secret-effects/protocol": "workspace:*",
+		"effect": "4.0.0-rc.112"
+	}
+}

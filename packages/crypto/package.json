@@ -1,0 +1,17 @@
+{
+	"name": "@secret-effects/crypto",
+	"version": "0.1.0",
+	"type": "module",
+	"license": "MIT",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@noble/curves": "2.0.1",
+		"@noble/hashes": "2.0.1",
+		"@secret-effects/protocol": "workspace:*",
+		"bs58": "6.0.0",
+		"cbor-x": "1.6.6",
+		"effect": "4.0.0-rc.112"
+	}
+}

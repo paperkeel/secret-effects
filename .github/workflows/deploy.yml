@@ -1,0 +1,96 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: secret-effects-production
+  cancel-in-progress: false
+
+jobs:
+  production:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    environment: production
+    env:
+      CI: "true"
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      SECRET_EFFECTS_ISSUER_PRIVATE_KEY: ${{ secrets.SECRET_EFFECTS_ISSUER_PRIVATE_KEY }}
+      SECRET_EFFECTS_BOOTSTRAP_TOKEN: ${{ secrets.SECRET_EFFECTS_BOOTSTRAP_TOKEN }}
+      SECRET_EFFECTS_API_URL: ${{ vars.SECRET_EFFECTS_API_URL }}
+    steps:
+      - name: Check out the successful commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check deployment inputs
+        run: |
+          test "$DEPLOY_SHA" = "$(git rev-parse HEAD)" || { echo "The checkout does not match the successful CI commit." >&2; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Set CLOUDFLARE_ACCOUNT_ID in the production environment." >&2; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Set CLOUDFLARE_API_TOKEN in the production environment." >&2; exit 1; }
+          test -n "$SECRET_EFFECTS_ISSUER_PRIVATE_KEY" || { echo "Set SECRET_EFFECTS_ISSUER_PRIVATE_KEY in the production environment." >&2; exit 1; }
+          test -n "$SECRET_EFFECTS_BOOTSTRAP_TOKEN" || { echo "Set SECRET_EFFECTS_BOOTSTRAP_TOKEN in the production environment." >&2; exit 1; }
+
+      - name: Deploy with Alchemy
+        run: pnpm deploy
+
+      - name: Verify the deployment
+        if: env.SECRET_EFFECTS_API_URL != ''
+        run: |
+          node --input-type=module <<'NODE'
+          const url = `${process.env.SECRET_EFFECTS_API_URL.replace(/\/$/, "")}/health`;
+          let lastStatus = 0;
+          for (let attempt = 1; attempt <= 12; attempt++) {
+            try {
+              const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+              lastStatus = response.status;
+              const body = await response.json();
+              if (response.ok && body?.status === "ok" && body?.service === "secret-effects") {
+                process.exit(0);
+              }
+            } catch (error) {
+              if (attempt === 12) throw error;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+          }
+          throw new Error(`The health check failed with HTTP ${lastStatus || "unknown"}.`);
+          NODE
+
+      - name: Write the deployment summary
+        if: always()
+        run: |
+          {
+            echo "### Secret Effects production"
+            echo
+            echo "Alchemy deployed commit: \`$DEPLOY_SHA\`"
+            if [ -n "$SECRET_EFFECTS_API_URL" ]; then
+              echo "API: $SECRET_EFFECTS_API_URL"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

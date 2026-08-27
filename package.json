@@ -1,0 +1,59 @@
+{
+	"name": "secret-effects",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"license": "MIT",
+	"packageManager": "pnpm@10.33.4",
+	"engines": {
+		"node": ">=24"
+	},
+	"pnpm": {
+		"overrides": {
+			"valibot": "1.4.2"
+		}
+	},
+	"scripts": {
+		"build": "pnpm -r --if-present build",
+		"check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+		"dev": "alchemy dev --stage dev",
+		"deploy": "alchemy deploy --stage prod --yes",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"infra:plan": "alchemy plan --stage prod",
+		"lint": "oxlint --type-aware .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit",
+		"wrangler:types": "wrangler types --config apps/api/wrangler.jsonc"
+	},
+	"dependencies": {
+		"@noble/curves": "2.0.1",
+		"@noble/hashes": "2.0.1",
+		"@t3-oss/env-core": "0.13.11",
+		"bs58": "6.0.0",
+		"cbor-x": "1.6.6",
+		"effect": "4.0.0-rc.112",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "0.22.0",
+		"@cloudflare/workers-types": "5.20260827.1",
+		"@effect/platform-node": "4.0.0-rc.112",
+		"@opentui/core": "0.5.8",
+		"@opentui/react": "0.5.8",
+		"@types/node": "24.10.13",
+		"@types/react": "19.2.14",
+		"alchemy": "2.0.0-beta.74",
+		"esbuild": "0.27.7",
+		"oxlint": "1.60.0",
+		"oxlint-tsgolint": "7.0.2001",
+		"prettier": "3.8.1",
+		"react": "19.2.4",
+		"tsx": "4.21.0",
+		"typescript": "5.9.3",
+		"vite": "8.0.7",
+		"vitest": "4.1.11",
+		"wrangler": "4.127.0"
+	}
+}
