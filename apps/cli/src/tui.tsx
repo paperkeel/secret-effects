@@ -72,43 +72,61 @@ async function loadSections(): Promise<Section[]> {
 		},
 	];
 	if (["global", "cicd", "agent"].includes(credential.payload.type)) {
-		result.push({
-			title: "Projects",
-			value: await requestJson(credential, "/v1/projects"),
-		});
+		await addRemoteSection(result, "Projects", () =>
+			requestJson(credential, "/v1/projects"),
+		);
 	}
 	if (
 		["global", "cicd", "project", "agent"].includes(credential.payload.type)
 	) {
-		result.push({
-			title: "Credentials",
-			value: await requestJson(credential, "/v1/credentials"),
-		});
+		await addRemoteSection(result, "Credentials", () =>
+			requestJson(credential, "/v1/credentials"),
+		);
 	}
-	if (credential.payload.project !== null) {
-		result.push({
-			title: "Environments",
-			value: await requestJson(
+	if (
+		credential.payload.project !== null &&
+		["global", "cicd", "project", "agent"].includes(credential.payload.type)
+	) {
+		await addRemoteSection(result, "Environments", () =>
+			requestJson(
 				credential,
 				`/v1/projects/${credential.payload.project}/environments`,
 			),
-		});
-		result.push({
-			title: "Schemas",
-			value: await requestJson(
+		);
+		await addRemoteSection(result, "Schemas", () =>
+			requestJson(
 				credential,
 				`/v1/projects/${credential.payload.project}/schemas`,
 			),
-		});
+		);
 	}
 	if (credential.payload.type !== "environment") {
 		const path =
 			credential.payload.project === null
 				? "/v1/audit"
 				: `/v1/projects/${credential.payload.project}/audit`;
-		result.push({ title: "Audit", value: await requestJson(credential, path) });
+		await addRemoteSection(result, "Audit", () =>
+			requestJson(credential, path),
+		);
 	}
 	return result;
+}
+
+async function addRemoteSection(
+	sections: Section[],
+	title: string,
+	load: () => Promise<unknown>,
+): Promise<void> {
+	try {
+		sections.push({ title, value: await load() });
+	} catch (cause) {
+		sections.push({
+			title,
+			value: {
+				error: cause instanceof Error ? cause.message : "The request failed.",
+			},
+		});
+	}
 }
 
 async function requestJson(
@@ -117,7 +135,15 @@ async function requestJson(
 ): Promise<unknown> {
 	const headers = await signRequest(credential, "GET", path, new Uint8Array());
 	const response = await fetch(`${credential.payload.api}${path}`, { headers });
-	const value: unknown = await response.json();
+	const text = await response.text();
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		throw new Error(
+			`Secret Effects returned HTTP ${response.status} with a non-JSON body.`,
+		);
+	}
 	if (!response.ok) {
 		throw new Error(`Secret Effects returned HTTP ${response.status}.`);
 	}

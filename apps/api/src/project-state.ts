@@ -27,6 +27,10 @@ export interface PublishResult extends CurrentBundle {
 	replayed: boolean;
 }
 
+export type PublishOutcome =
+	| { status: "published"; result: PublishResult }
+	| { status: "conflict" };
+
 export class ProjectState extends DurableObject<ApiEnv> {
 	constructor(ctx: DurableObjectState, env: ApiEnv) {
 		super(ctx, env);
@@ -70,15 +74,15 @@ export class ProjectState extends DurableObject<ApiEnv> {
 
 	async initialize(): Promise<void> {
 		const now = Date.now();
-		this.ctx.storage.sql.exec(
-			"INSERT OR IGNORE INTO environments(name, is_default, created_at) VALUES (?, 1, ?), (?, 1, ?), (?, 1, ?)",
-			DEFAULT_ENVIRONMENTS[0],
-			now,
-			DEFAULT_ENVIRONMENTS[1],
-			now,
-			DEFAULT_ENVIRONMENTS[2],
-			now,
-		);
+		this.ctx.storage.transactionSync(() => {
+			for (const name of DEFAULT_ENVIRONMENTS) {
+				this.ctx.storage.sql.exec(
+					"INSERT OR IGNORE INTO environments(name, is_default, created_at) VALUES (?, 1, ?)",
+					name,
+					now,
+				);
+			}
+		});
 	}
 
 	async createEnvironment(name: string): Promise<void> {
@@ -89,7 +93,7 @@ export class ProjectState extends DurableObject<ApiEnv> {
 		);
 	}
 
-	async publish(input: PublishInput): Promise<PublishResult> {
+	async publish(input: PublishInput): Promise<PublishOutcome> {
 		const replayBeforeUpload = this.ctx.storage.sql
 			.exec<{
 				object_key: string;
@@ -104,12 +108,15 @@ export class ProjectState extends DurableObject<ApiEnv> {
 			.toArray()[0];
 		if (replayBeforeUpload !== undefined) {
 			return {
-				objectKey: replayBeforeUpload.object_key,
-				contentVersion: replayBeforeUpload.content_version,
-				envelopeVersion: replayBeforeUpload.envelope_version,
-				digest: replayBeforeUpload.digest,
-				createdAt: replayBeforeUpload.created_at,
-				replayed: true,
+				status: "published",
+				result: {
+					objectKey: replayBeforeUpload.object_key,
+					contentVersion: replayBeforeUpload.content_version,
+					envelopeVersion: replayBeforeUpload.envelope_version,
+					digest: replayBeforeUpload.digest,
+					createdAt: replayBeforeUpload.created_at,
+					replayed: true,
+				},
 			};
 		}
 
@@ -124,63 +131,59 @@ export class ProjectState extends DurableObject<ApiEnv> {
 			},
 		});
 
-		const outcome = await this.ctx.blockConcurrencyWhile(async () => {
-			try {
-				const replay = this.ctx.storage.sql
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const replay = this.ctx.storage.sql
+				.exec<{
+					object_key: string;
+					content_version: string;
+					envelope_version: string;
+					digest: string;
+					created_at: number;
+				}>(
+					"SELECT object_key, content_version, envelope_version, digest, created_at FROM operations WHERE idempotency_key = ?",
+					input.idempotencyKey,
+				)
+				.toArray()[0];
+			if (replay !== undefined) {
+				return {
+					status: "published" as const,
+					result: {
+						objectKey: replay.object_key,
+						contentVersion: replay.content_version,
+						envelopeVersion: replay.envelope_version,
+						digest: replay.digest,
+						createdAt: replay.created_at,
+						replayed: true,
+					},
+				};
+			}
+
+			const before = await this.current(input.environment);
+			if ((before?.contentVersion ?? null) !== input.baseVersion) {
+				return { status: "conflict" as const };
+			}
+
+			const previous =
+				this.ctx.storage.sql
 					.exec<{
-						object_key: string;
-						content_version: string;
-						envelope_version: string;
-						digest: string;
-						created_at: number;
+						event_hash: string;
 					}>(
-						"SELECT object_key, content_version, envelope_version, digest, created_at FROM operations WHERE idempotency_key = ?",
-						input.idempotencyKey,
+						"SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1",
 					)
-					.toArray()[0];
-				if (replay !== undefined) {
-					return {
-						success: true as const,
-						result: {
-							objectKey: replay.object_key,
-							contentVersion: replay.content_version,
-							envelopeVersion: replay.envelope_version,
-							digest: replay.digest,
-							createdAt: replay.created_at,
-							replayed: true,
-						},
-					};
-				}
+					.toArray()[0]?.event_hash ?? "0".repeat(64);
+			const eventMaterial = [
+				previous,
+				input.actor,
+				"bundle.publish",
+				input.environment,
+				input.digest,
+				String(input.createdAt),
+			].join("\n");
+			const eventHash = await digestHex(eventMaterial);
 
-				const before = await this.current(input.environment);
-				if ((before?.contentVersion ?? null) !== input.baseVersion) {
-					return {
-						success: false as const,
-						message: "The environment changed after the client loaded it.",
-					};
-				}
-
-				const previous =
-					this.ctx.storage.sql
-						.exec<{
-							event_hash: string;
-						}>(
-							"SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1",
-						)
-						.toArray()[0]?.event_hash ?? "0".repeat(64);
-				const eventMaterial = [
-					previous,
-					input.actor,
-					"bundle.publish",
-					input.environment,
-					input.digest,
-					String(input.createdAt),
-				].join("\n");
-				const eventHash = await digestHex(eventMaterial);
-
-				this.ctx.storage.transactionSync(() => {
-					this.ctx.storage.sql.exec(
-						`INSERT INTO current_bundles(environment, object_key, content_version, envelope_version, digest, created_at)
+			this.ctx.storage.transactionSync(() => {
+				this.ctx.storage.sql.exec(
+					`INSERT INTO current_bundles(environment, object_key, content_version, envelope_version, digest, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(environment) DO UPDATE SET
 				 object_key = excluded.object_key,
@@ -188,58 +191,47 @@ export class ProjectState extends DurableObject<ApiEnv> {
 				 envelope_version = excluded.envelope_version,
 				 digest = excluded.digest,
 				 created_at = excluded.created_at`,
-						input.environment,
-						input.objectKey,
-						input.contentVersion,
-						input.envelopeVersion,
-						input.digest,
-						input.createdAt,
-					);
-					this.ctx.storage.sql.exec(
-						"INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
-						input.idempotencyKey,
-						input.environment,
-						input.objectKey,
-						input.contentVersion,
-						input.envelopeVersion,
-						input.digest,
-						input.createdAt,
-					);
-					this.ctx.storage.sql.exec(
-						"INSERT INTO audit_events(previous_hash, event_hash, actor, action, environment, object_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-						previous,
-						eventHash,
-						input.actor,
-						"bundle.publish",
-						input.environment,
-						input.digest,
-						input.createdAt,
-					);
-				});
+					input.environment,
+					input.objectKey,
+					input.contentVersion,
+					input.envelopeVersion,
+					input.digest,
+					input.createdAt,
+				);
+				this.ctx.storage.sql.exec(
+					"INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
+					input.idempotencyKey,
+					input.environment,
+					input.objectKey,
+					input.contentVersion,
+					input.envelopeVersion,
+					input.digest,
+					input.createdAt,
+				);
+				this.ctx.storage.sql.exec(
+					"INSERT INTO audit_events(previous_hash, event_hash, actor, action, environment, object_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					previous,
+					eventHash,
+					input.actor,
+					"bundle.publish",
+					input.environment,
+					input.digest,
+					input.createdAt,
+				);
+			});
 
-				return {
-					success: true as const,
-					result: {
-						objectKey: input.objectKey,
-						contentVersion: input.contentVersion,
-						envelopeVersion: input.envelopeVersion,
-						digest: input.digest,
-						createdAt: input.createdAt,
-						replayed: false,
-					},
-				};
-			} catch (cause) {
-				return {
-					success: false as const,
-					message:
-						cause instanceof Error ? cause.message : "Publication failed.",
-				};
-			}
+			return {
+				status: "published" as const,
+				result: {
+					objectKey: input.objectKey,
+					contentVersion: input.contentVersion,
+					envelopeVersion: input.envelopeVersion,
+					digest: input.digest,
+					createdAt: input.createdAt,
+					replayed: false,
+				},
+			};
 		});
-		if (!outcome.success) {
-			throw new Error(outcome.message);
-		}
-		return outcome.result;
 	}
 
 	async current(environment: string): Promise<CurrentBundle | null> {

@@ -57,12 +57,13 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "Set CLOUDFLARE_API_TOKEN in the production environment." >&2; exit 1; }
           test -n "$SECRET_EFFECTS_ISSUER_PRIVATE_KEY" || { echo "Set SECRET_EFFECTS_ISSUER_PRIVATE_KEY in the production environment." >&2; exit 1; }
           test -n "$SECRET_EFFECTS_BOOTSTRAP_TOKEN" || { echo "Set SECRET_EFFECTS_BOOTSTRAP_TOKEN in the production environment." >&2; exit 1; }
+          test -n "$SECRET_EFFECTS_API_URL" || { echo "Set SECRET_EFFECTS_API_URL in the production environment." >&2; exit 1; }
+          case "$SECRET_EFFECTS_API_URL" in https://*) ;; *) echo "SECRET_EFFECTS_API_URL must use HTTPS." >&2; exit 1 ;; esac
 
       - name: Deploy with Alchemy
         run: pnpm run deploy
 
       - name: Verify the deployment
-        if: env.SECRET_EFFECTS_API_URL != ''
         run: |
           node --input-type=module <<'NODE'
           const url = `${process.env.SECRET_EFFECTS_API_URL.replace(/\/$/, "")}/health`;
@@ -90,7 +91,5 @@ jobs:
             echo "### Secret Effects production"
             echo
             echo "Alchemy deployed commit: \`$DEPLOY_SHA\`"
-            if [ -n "$SECRET_EFFECTS_API_URL" ]; then
-              echo "API: $SECRET_EFFECTS_API_URL"
-            fi
+            echo "API: $SECRET_EFFECTS_API_URL"
           } >> "$GITHUB_STEP_SUMMARY"

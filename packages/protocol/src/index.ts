@@ -128,17 +128,48 @@ export function assertMachineName(value: string, label: string): void {
 }
 
 export function canonicalJson(value: unknown): string {
-	if (value === null || typeof value !== "object") {
+	return canonicalJsonValue(value, new Set<object>());
+}
+
+function canonicalJsonValue(value: unknown, ancestors: Set<object>): string {
+	if (value === null) {
+		return "null";
+	}
+	if (typeof value === "string" || typeof value === "boolean") {
 		return JSON.stringify(value);
 	}
-	if (Array.isArray(value)) {
-		return `[${value.map(canonicalJson).join(",")}]`;
+	if (typeof value === "number") {
+		if (!Number.isFinite(value)) {
+			throw new TypeError("Canonical JSON accepts only finite numbers.");
+		}
+		return JSON.stringify(value);
 	}
-	const record = value as Record<string, unknown>;
-	return `{${Object.keys(record)
-		.sort()
-		.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-		.join(",")}}`;
+	if (typeof value !== "object") {
+		throw new TypeError("Canonical JSON contains an unsupported value.");
+	}
+	if (ancestors.has(value)) {
+		throw new TypeError("Canonical JSON cannot contain a cycle.");
+	}
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value)) {
+			return `[${value.map((item) => canonicalJsonValue(item, ancestors)).join(",")}]`;
+		}
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) {
+			throw new TypeError("Canonical JSON accepts only plain objects.");
+		}
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record)
+			.sort()
+			.map(
+				(key) =>
+					`${JSON.stringify(key)}:${canonicalJsonValue(record[key], ancestors)}`,
+			)
+			.join(",")}}`;
+	} finally {
+		ancestors.delete(value);
+	}
 }
 
 export function environmentCacheTag(

@@ -34,13 +34,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Check the signed tag and version
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")"
-          test "$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).object.type)' "$tag_object")" = "tag" || { echo "Use an annotated tag." >&2; exit 1; }
-          tag_sha="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).object.sha)' "$tag_object")"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.verified')" = "true" || { echo "Use a verified signed tag." >&2; exit 1; }
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          test "$(git rev-parse "$GITHUB_REF_NAME^{commit}")" = "$(git rev-parse origin/master)" || { echo "Tag the current master commit." >&2; exit 1; }
+          git -c gpg.ssh.allowedSignersFile="$GITHUB_WORKSPACE/.github/signing_allowed_signers" verify-tag "$GITHUB_REF_NAME" || { echo "Use an SSH-signed tag from an allowed signer." >&2; exit 1; }
           test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME" || { echo "The package version must match the tag." >&2; exit 1; }
 
       - name: Check and build

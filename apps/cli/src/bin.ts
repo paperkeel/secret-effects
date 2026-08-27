@@ -473,7 +473,15 @@ function writeCredential(value: string): void {
 }
 
 async function readJson<Value = unknown>(response: Response): Promise<Value> {
-	const value: unknown = await response.json();
+	const text = await response.text();
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		throw new CliError({
+			message: `The service returned HTTP ${response.status} with a non-JSON body.`,
+		});
+	}
 	if (!response.ok) {
 		const message =
 			typeof value === "object" &&
