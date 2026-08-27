@@ -162,7 +162,7 @@ async function route(
 		return listCredentials(env, actor);
 	}
 	if (request.method === "POST" && url.pathname === "/v1/credentials") {
-		return issueCredential(request, env, actor, body);
+		return issueCredential(env, actor, body);
 	}
 	const revokePath = /^\/v1\/credentials\/([a-f0-9]{32})\/revoke$/.exec(
 		url.pathname,
@@ -254,7 +254,10 @@ async function bootstrap(
 	body: Uint8Array,
 ): Promise<Response> {
 	const authorization = request.headers.get("authorization");
-	if (authorization !== `Bearer ${env.BOOTSTRAP_TOKEN}`) {
+	if (
+		authorization === null ||
+		!timingSafeEqualStrings(authorization, `Bearer ${env.BOOTSTRAP_TOKEN}`)
+	) {
 		throw new ApiError({
 			status: 401,
 			code: "unauthorized",
@@ -284,7 +287,7 @@ async function bootstrap(
 		});
 	}
 	await validateCredentialIssue(env, issue);
-	return persistIssuedCredential(request, env, issue, "bootstrap");
+	return persistIssuedCredential(env, issue, "bootstrap");
 }
 
 async function authenticate(
@@ -476,7 +479,6 @@ async function createEnvironment(
 }
 
 async function issueCredential(
-	request: Request,
 	env: ApiEnv,
 	actor: AuthenticatedCredential,
 	body: Uint8Array,
@@ -505,11 +507,10 @@ async function issueCredential(
 			message: "The requested project is outside the credential scope.",
 		});
 	}
-	return persistIssuedCredential(request, env, issue, actor.identifier);
+	return persistIssuedCredential(env, issue, actor.identifier);
 }
 
 async function persistIssuedCredential(
-	request: Request,
 	env: ApiEnv,
 	issue: typeof CredentialIssueRequest.Type,
 	issuedBy: string,
@@ -519,7 +520,7 @@ async function persistIssuedCredential(
 	const issuerPrivateKey = hexToBytes(env.ISSUER_PRIVATE_KEY);
 	const payload: CredentialPayload = {
 		version: 1,
-		api: new URL(request.url).origin,
+		api: env.API_ORIGIN,
 		issuer: env.ISSUER_ID,
 		issuerPublicKey: bytesToHex(ed25519.getPublicKey(issuerPrivateKey)),
 		type: issue.type,
@@ -810,9 +811,9 @@ async function publishBundle(
 	const objectKey = bundleObjectKey(acceptedBundle);
 	const bundleText = JSON.stringify(acceptedBundle);
 	const digest = bytesToHex(sha256(encoder.encode(bundleText)));
-	let result;
+	let outcome;
 	try {
-		result = await env.PROJECTS.getByName(project).publish({
+		outcome = await env.PROJECTS.getByName(project).publish({
 			environment,
 			objectKey,
 			bundle: bundleText,
@@ -824,16 +825,21 @@ async function publishBundle(
 			digest,
 			createdAt: input.bundle.createdAt,
 		});
-	} catch (cause) {
+	} catch {
+		throw new ApiError({
+			status: 503,
+			code: "publication_unavailable",
+			message: "The publication service is temporarily unavailable.",
+		});
+	}
+	if (outcome.status === "conflict") {
 		throw new ApiError({
 			status: 409,
 			code: "publish_conflict",
-			message:
-				cause instanceof Error
-					? cause.message
-					: "The environment publication conflicted.",
+			message: "The environment changed after the client loaded it.",
 		});
 	}
+	const result = outcome.result;
 	const purge = await purgeCache(
 		ctx,
 		environmentCacheTag(project, environment),
@@ -1144,6 +1150,19 @@ function requiredHeader(request: Request, name: string): string {
 		});
 	}
 	return value;
+}
+
+function timingSafeEqualStrings(left: string, right: string): boolean {
+	const leftBytes = encoder.encode(left);
+	const rightBytes = encoder.encode(right);
+	if (leftBytes.byteLength !== rightBytes.byteLength) {
+		return false;
+	}
+	let difference = 0;
+	for (let index = 0; index < leftBytes.byteLength; index += 1) {
+		difference |= (leftBytes[index] as number) ^ (rightBytes[index] as number);
+	}
+	return difference === 0;
 }
 
 function json(value: unknown, status = 200): Response {

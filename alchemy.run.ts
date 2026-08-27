@@ -18,6 +18,7 @@ export interface ApiEnv {
 	ISSUER_PRIVATE_KEY: string;
 	BOOTSTRAP_TOKEN: string;
 	ISSUER_ID: string;
+	API_ORIGIN: string;
 }
 
 export default Alchemy.Stack(
@@ -35,6 +36,28 @@ export default Alchemy.Stack(
 		}
 		const production = stage === "prod";
 		const suffix = production ? "" : `-${stage}`;
+		const configuredApiOrigin =
+			process.env.SECRET_EFFECTS_API_URL ??
+			(production ? undefined : "http://127.0.0.1:8787");
+		if (configuredApiOrigin === undefined) {
+			return yield* Effect.die(
+				new Error("SECRET_EFFECTS_API_URL is required for production."),
+			);
+		}
+		let apiOrigin: string;
+		try {
+			const apiUrl = new URL(configuredApiOrigin);
+			if (production && apiUrl.protocol !== "https:") {
+				return yield* Effect.die(
+					new Error("SECRET_EFFECTS_API_URL must use HTTPS in production."),
+				);
+			}
+			apiOrigin = apiUrl.origin;
+		} catch {
+			return yield* Effect.die(
+				new Error("SECRET_EFFECTS_API_URL must be an absolute URL."),
+			);
+		}
 		const deploymentSha =
 			process.env.DEPLOY_SHA ?? process.env.GITHUB_SHA ?? "local";
 
@@ -87,6 +110,7 @@ export default Alchemy.Stack(
 				),
 				BOOTSTRAP_TOKEN: Config.redacted("SECRET_EFFECTS_BOOTSTRAP_TOKEN"),
 				ISSUER_ID: "secreteffectsroot2026",
+				API_ORIGIN: apiOrigin,
 			},
 			version: {
 				message: deploymentSha === "local" ? "local deployment" : deploymentSha,

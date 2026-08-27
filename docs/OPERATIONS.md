@@ -10,10 +10,14 @@ Production deployment needs these values:
 | `CLOUDFLARE_API_TOKEN`              | Manages the Alchemy resources          |
 | `SECRET_EFFECTS_ISSUER_PRIVATE_KEY` | Signs credential descriptors           |
 | `SECRET_EFFECTS_BOOTSTRAP_TOKEN`    | Authorizes the first Global credential |
+| `SECRET_EFFECTS_API_URL`            | Pins the signed production API origin  |
 
 Generate the issuer key as 32 random bytes and lowercase hexadecimal. Generate
 the bootstrap token with at least 32 random bytes. Store both as GitHub
 production environment secrets.
+
+Store `SECRET_EFFECTS_API_URL` as a GitHub production environment variable.
+The URL must use HTTPS.
 
 ## Deploy
 
@@ -38,6 +42,7 @@ pnpm build
 Set the temporary bootstrap token. Send the only bootstrap request.
 
 ```sh
+umask 077
 SECRET_EFFECTS_BOOTSTRAP_TOKEN='<token>' \
   node apps/cli/dist/secreteffects.js bootstrap \
   --api https://<worker-host> > global.secret-effects-key
@@ -66,7 +71,8 @@ public manifest as JSON. A Project credential can register it.
 
 ```sh
 export SECRET_EFFECTS_KEY='<project-credential>'
-secreteffects schema publish --project example --manifest schema.json
+node apps/cli/dist/secreteffects.js schema publish \
+  --project example --manifest schema.json
 ```
 
 ## Publish an environment
