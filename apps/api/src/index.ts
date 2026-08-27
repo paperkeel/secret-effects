@@ -359,12 +359,12 @@ async function bootstrap(
 	env: ApiEnv,
 	body: Uint8Array,
 ): Promise<Response> {
-	await enforceBootstrapRateLimit(env);
 	const authorization = request.headers.get("authorization");
 	if (
 		authorization === null ||
 		!timingSafeEqualStrings(authorization, `Bearer ${env.GLOBAL_ADMIN_TOKEN}`)
 	) {
+		await enforceBootstrapRateLimit(env);
 		throw new ApiError({
 			status: 401,
 			code: "unauthorized",
@@ -398,24 +398,32 @@ async function bootstrap(
 }
 
 /**
- * Counts bootstrap attempts per fixed window and rejects the excess.
+ * Counts rejected bootstrap attempts per fixed window and rejects the excess.
+ *
+ * @remarks
+ * Interaction: A catalog failure leaves the limiter open, and the token check still applies.
  *
  * @param env - The Cloudflare resource bindings for the service.
  * @returns A promise that completes when the attempt is within the limit.
- * @throws {@link ApiError} When the attempt count for the current window exceeds the limit.
+ * @throws {@link ApiError} When the rejected attempt count for the current window exceeds the limit.
  */
 async function enforceBootstrapRateLimit(env: ApiEnv): Promise<void> {
 	const now = Date.now();
 	const cutoff = now - BOOTSTRAP_RATE_WINDOW_MS;
-	const row = await env.CATALOG.prepare(
-		`INSERT INTO rate_limits(key, window_start, count) VALUES ('bootstrap', ?, 1)
-		 ON CONFLICT(key) DO UPDATE SET
-		 count = CASE WHEN window_start < ? THEN 1 ELSE count + 1 END,
-		 window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END
-		 RETURNING count`,
-	)
-		.bind(now, cutoff, cutoff, now)
-		.first<{ count: number }>();
+	let row: { count: number } | null;
+	try {
+		row = await env.CATALOG.prepare(
+			`INSERT INTO rate_limits(key, window_start, count) VALUES ('bootstrap', ?, 1)
+			 ON CONFLICT(key) DO UPDATE SET
+			 count = CASE WHEN window_start < ? THEN 1 ELSE count + 1 END,
+			 window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END
+			 RETURNING count`,
+		)
+			.bind(now, cutoff, cutoff, now)
+			.first<{ count: number }>();
+	} catch {
+		return;
+	}
 	if ((row?.count ?? 0) > BOOTSTRAP_RATE_LIMIT) {
 		throw new ApiError({
 			status: 429,
@@ -701,6 +709,9 @@ async function issueCredential(
 /**
  * Signs and persists one authorized credential, then records its audit event.
  *
+ * @remarks
+ * Interaction: An audit append failure is reported to monitoring and does not fail the issuance response.
+ *
  * @param env - The Cloudflare resource bindings for the service.
  * @param issue - The credential fields that the issuer must validate and sign.
  * @param issuedBy - The identity that authorized credential issuance.
@@ -763,13 +774,17 @@ async function persistIssuedCredential(
 		}
 		throw cause;
 	}
-	await appendAudit(env, issuedBy, {
-		action: "credential.issue.authorized",
-		project: issue.project,
-		environment: issue.environment,
-		subject: identifier,
-		details: { type: issue.type, issuedBy, expiresAt: issue.expiresAt },
-	});
+	try {
+		await appendAudit(env, issuedBy, {
+			action: "credential.issue.authorized",
+			project: issue.project,
+			environment: issue.environment,
+			subject: identifier,
+			details: { type: issue.type, issuedBy, expiresAt: issue.expiresAt },
+		});
+	} catch (cause) {
+		Sentry.captureException(cause);
+	}
 	return json(
 		{
 			payload: bytesToBase64Url(payloadBytes),
@@ -947,23 +962,27 @@ async function registerSchema(
 		});
 	}
 	if (existing === null) {
-		const count = await env.CATALOG.prepare(
-			"SELECT COUNT(*) AS count FROM schema_manifests WHERE project = ?",
+		const inserted = await env.CATALOG.prepare(
+			`INSERT INTO schema_manifests(project, digest, manifest, created_at, created_by)
+			 SELECT ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM schema_manifests WHERE project = ?) < ?`,
 		)
-			.bind(project)
-			.first<{ count: number }>();
-		if ((count?.count ?? 0) >= MAX_SCHEMAS_PER_PROJECT) {
+			.bind(
+				project,
+				input.digest,
+				manifestText,
+				Date.now(),
+				actor.identifier,
+				project,
+				MAX_SCHEMAS_PER_PROJECT,
+			)
+			.run();
+		if (inserted.meta.changes === 0) {
 			throw new ApiError({
 				status: 409,
 				code: "schema_limit_reached",
 				message: "The project reached its schema manifest limit.",
 			});
 		}
-		await env.CATALOG.prepare(
-			"INSERT INTO schema_manifests(project, digest, manifest, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
-		)
-			.bind(project, input.digest, manifestText, Date.now(), actor.identifier)
-			.run();
 		await appendAudit(env, actor, {
 			action: "schema.register",
 			project,

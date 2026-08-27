@@ -615,7 +615,13 @@ async function authenticatedFetch(
 async function configuredCredential() {
 	const rendered = requiredEnv("SECRET_EFFECTS_KEY");
 	const candidate = await parseCredential(rendered);
-	const wellKnown = await fetchWellKnown(new URL(candidate.payload.api).origin);
+	const api = new URL(candidate.payload.api);
+	if (api.protocol !== "https:") {
+		throw new CliError({
+			message: "The credential API origin must use HTTPS.",
+		});
+	}
+	const wellKnown = await fetchWellKnown(api.origin);
 	return parseCredential(rendered, {
 		issuerPublicKey: wellKnown.issuerPublicKey,
 		apiOrigin: wellKnown.origin,
@@ -627,14 +633,22 @@ async function configuredCredential() {
  *
  * @param origin - The HTTPS service origin that hosts the well-known record.
  * @returns The cached or fetched well-known record.
- * @throws {@link CliError} When the record is unreachable or has an invalid shape.
+ * @throws {@link CliError} When the origin is not HTTPS, or the record is unreachable or has an invalid shape.
  */
 async function fetchWellKnown(origin: string): Promise<WellKnownRecord> {
 	const cached = wellKnownCache.get(origin);
 	if (cached !== undefined) {
 		return cached;
 	}
-	if (origin.startsWith("http://")) {
+	let parsed: URL;
+	try {
+		parsed = new URL(origin);
+	} catch {
+		throw new CliError({
+			message: "The credential API origin is not an absolute URL.",
+		});
+	}
+	if (parsed.protocol !== "https:") {
 		throw new CliError({
 			message: "The credential API origin must use HTTPS.",
 		});

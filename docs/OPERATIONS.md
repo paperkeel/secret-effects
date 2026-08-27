@@ -80,14 +80,14 @@ chmod 600 global.secret-effects-key
 Move the resulting Global credential to durable offline storage. Do not commit
 the file. Do not configure the Global credential in CI.
 
-The service accepts at most five bootstrap attempts per minute per deployment.
-This limit slows token guessing. It does not remove the need for a strong
-global admin token.
+The service rejects bootstrap after five rejected attempts per minute per
+deployment. This limit slows token guessing. It does not remove the need for a
+strong global admin token.
 
 ## Rotate the Global credential
 
 A Global credential can revoke any credential type, including itself. To rotate
-the Global credential, first issue and store the replacement:
+the Global credential:
 
 1. Revoke the current Global credential with the Global credential itself.
 2. Run the bootstrap command again with the global admin token.
