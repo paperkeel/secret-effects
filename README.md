@@ -23,7 +23,7 @@ Use this prompt with an agent that can access GitHub and your Cloudflare
 account. Replace the values in angle brackets before you start.
 
 > Deploy a private Secret Effects instance for me from
-> `https://github.com/bearfire-dev/secret-effects`.
+> `https://github.com/paperkeel/secret-effects`.
 >
 > Use `<GITHUB_OWNER>/<PRIVATE_REPOSITORY>` for the deployment repository. Keep
 > that repository private by default. If GitHub cannot make a fork of the public
