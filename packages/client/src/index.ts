@@ -1,122 +1,547 @@
 /**
- * Loads one validated environment from an encrypted Secret Effects bundle.
+ * Loads one validated environment from Secret Effects and local runtime values.
  *
  * @remarks
- * Responsibility: Owns runtime credential selection, signed bundle retrieval, scope validation, decryption, and environment validation.
+ * Responsibility: Owns credential selection, bounded bundle retrieval, scope validation, decryption, source merging, and T3 environment validation.
  *
- * Boundary: Accepts a repository configuration and readable credential. It does not publish or persist secret values.
+ * Boundary: Accepts a repository configuration and runtime bindings. It does not publish, persist, cache, log, or expose secret values.
  */
-import { createEnv } from "@t3-oss/env-core";
+import {
+	createEnv,
+	type EnvOptions,
+	type StandardSchemaV1,
+} from "@t3-oss/env-core";
+import * as Data from "effect/Data";
 import * as Schema from "effect/Schema";
-import type { SecretEffectsConfig, InferConfig } from "@secret-effects/config";
-import { schemaDigest, schemaForEnvironment } from "@secret-effects/config";
 import {
 	openBundle,
 	parseCredential,
 	signRequest,
 } from "@secret-effects/crypto";
 import { SealedBundle, assertMachineName } from "@secret-effects/protocol";
+import {
+	type InferEnv,
+	type RuntimeSchemaRecord,
+	type SecretEffectsConfig,
+	schemaDigest,
+	schemaForEnvironment,
+	serverSchemaForEnvironment,
+} from "./config.js";
 
-export interface LoadEnvOptions {
+export {
+	defineEnv,
+	materializeEnvironment,
+	schemaDigest,
+	schemaManifest,
+	secret,
+	z,
+} from "./config.js";
+export type {
+	InferEnv,
+	InferSecrets,
+	RuntimeSchemaRecord,
+	SecretDefinition,
+	SecretEffectsConfig,
+	SecretEffectsManifest,
+	SecretOptions,
+	ServerDefinition,
+	ServerRecord,
+} from "./config.js";
+
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_TIMEOUT_MS = 10_000;
+const CREDENTIAL_NAME = "SECRET_EFFECTS_KEY";
+
+export type RuntimeEnv = Readonly<
+	Record<string, string | number | boolean | undefined>
+>;
+
+export type SecretEffectsClientErrorCode =
+	| "CREDENTIAL"
+	| "DECRYPTION"
+	| "INTERNAL"
+	| "REQUEST"
+	| "RESPONSE"
+	| "SCOPE"
+	| "SOURCE_CONFLICT"
+	| "VALIDATION";
+
+export class SecretEffectsClientError extends Data.TaggedError(
+	"SecretEffectsClientError",
+)<{
+	readonly code: SecretEffectsClientErrorCode;
+	readonly message: string;
+}> {}
+
+export interface LoadEnvOptions<Environment extends string = string> {
 	credential?: string;
+	environment?: Environment;
 	fetch?: typeof globalThis.fetch;
+	runtimeEnv?: object;
+	timeoutMs?: number;
+}
+
+type RuntimeCreateEnvOptions = EnvOptions<
+	string | undefined,
+	RuntimeSchemaRecord,
+	RuntimeSchemaRecord,
+	RuntimeSchemaRecord,
+	[],
+	StandardSchemaV1<{}, Readonly<Record<string, unknown>>>
+>;
+
+/**
+ * Loads, decrypts, merges, and validates one configured runtime environment.
+ *
+ * @typeParam Config - The repository configuration that determines the result shape.
+ * @typeParam Environment - The configured environment selected by the caller or credential.
+ * @param config - The repository configuration that defines the environment.
+ * @param options - The optional credential, environment, fetch implementation, runtime bindings, and timeout.
+ * @returns The validated environment values.
+ * @throws {@link SecretEffectsClientError} When the client cannot produce a valid environment.
+ */
+export async function loadEnv<
+	Config extends SecretEffectsConfig,
+	const Environment extends Config["environments"][number] =
+		Config["environments"][number],
+>(
+	config: Config,
+	options: LoadEnvOptions<Environment> = {},
+): Promise<InferEnv<Config, Environment>> {
+	try {
+		return await loadValidatedEnv(config, options);
+	} catch (error) {
+		if (error instanceof SecretEffectsClientError) throw error;
+		throw clientError(
+			"INTERNAL",
+			"Secret Effects could not load the environment.",
+		);
+	}
 }
 
 /**
- * Loads, decrypts, and validates one configured runtime environment.
+ * Performs one uncached environment load within the public error boundary.
  *
  * @typeParam Config - The repository configuration that determines the result shape.
  * @param config - The repository configuration that defines the environment.
- * @param options - The optional settings for the secret or runtime load.
+ * @param options - The optional credential, fetch implementation, and runtime bindings.
  * @returns The validated environment values.
- * @throws {@link Error} When credential parsing, scope validation, HTTP access, bundle validation, decryption, or schema parsing fails.
+ * @throws {@link SecretEffectsClientError} When a load step fails.
  */
-export async function loadEnv<Config extends SecretEffectsConfig>(
+async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 	config: Config,
-	options: LoadEnvOptions = {},
-): Promise<InferConfig<Config>> {
-	const rendered = options.credential ?? readCredentialFromRuntime();
-	const credential = await parseCredential(rendered);
+	options: LoadEnvOptions<Config["environments"][number]>,
+): Promise<InferEnv<Config>> {
+	const runtimeEnv = normalizeRuntimeEnv(
+		options.runtimeEnv ?? defaultRuntimeEnv(),
+	);
+	const rendered = readCredential(options.credential, runtimeEnv);
+	rejectSourceConflicts(config, runtimeEnv);
+	let credential;
+	try {
+		credential = await parseCredential(rendered);
+	} catch {
+		throw clientError(
+			"CREDENTIAL",
+			"The Secret Effects credential is invalid.",
+		);
+	}
 	if (
 		credential.payload.type !== "environment" &&
 		credential.payload.type !== "project"
 	) {
-		throw new Error(
-			"The runtime client requires an Environment or Project credential.",
+		throw clientError(
+			"CREDENTIAL",
+			"The client requires an Environment or Project credential.",
 		);
 	}
 	if (credential.payload.project !== config.project) {
-		throw new Error(
-			"The credential project does not match the repository configuration.",
+		throw clientError(
+			"SCOPE",
+			"The credential project does not match the client configuration.",
 		);
 	}
-	const environment = credential.payload.environment;
-	if (environment === null) {
-		throw new Error("The credential does not select an environment.");
-	}
-	assertMachineName(environment, "The credential environment");
-	const api = new URL(credential.payload.api);
 	if (
-		api.protocol !== "https:" ||
-		api.pathname !== "/" ||
-		api.search !== "" ||
-		api.hash !== ""
+		credential.payload.environment !== null &&
+		options.environment !== undefined &&
+		credential.payload.environment !== options.environment
 	) {
-		throw new Error("The credential API must contain an HTTPS origin.");
+		throw clientError(
+			"SCOPE",
+			"The requested environment does not match the credential environment.",
+		);
 	}
-	const path = `/v1/projects/${encodeURIComponent(config.project)}/environments/${encodeURIComponent(environment)}/bundle`;
-	const headers = await signRequest(credential, "GET", path, new Uint8Array());
-	const response = await (options.fetch ?? globalThis.fetch)(
-		`${api.origin}${path}`,
-		{
-			headers,
-		},
-	);
+	const environment =
+		credential.payload.environment ?? options.environment ?? null;
+	if (environment === null) {
+		throw clientError(
+			"SCOPE",
+			"The credential does not select an environment.",
+		);
+	}
+	try {
+		assertMachineName(environment, "The credential environment");
+	} catch {
+		throw clientError("SCOPE", "The credential environment is invalid.");
+	}
+	if (!config.environments.includes(environment)) {
+		throw clientError(
+			"SCOPE",
+			"The client configuration does not declare the credential environment.",
+		);
+	}
+	const api = validateApiOrigin(credential.payload.api);
+	const path = `/v1/projects/${formatPathSegment(config.project)}/environments/${formatPathSegment(environment)}/bundle`;
+	const timeoutMs = validateTimeout(options.timeoutMs);
+	const signal = AbortSignal.timeout(timeoutMs);
+	let response: Response;
+	try {
+		const headers = await signRequest(
+			credential,
+			"GET",
+			path,
+			new Uint8Array(),
+		);
+		const request = options.fetch ?? globalThis.fetch;
+		response = await request(`${api.origin}${path}`, { headers, signal });
+	} catch {
+		throw clientError("REQUEST", "The Secret Effects request failed.");
+	}
 	if (!response.ok) {
-		throw new Error(`Secret Effects returned HTTP ${response.status}.`);
+		throw clientError(
+			"RESPONSE",
+			`Secret Effects returned HTTP ${response.status}.`,
+		);
 	}
-	const bundle = Schema.decodeUnknownSync(SealedBundle)(await response.json());
-	const expectedSchemaDigest = await schemaDigest(config);
+	const bundle = await readBundle(response, signal);
+	let expectedSchemaDigest: string;
+	try {
+		expectedSchemaDigest = await schemaDigest(config);
+	} catch {
+		throw clientError(
+			"VALIDATION",
+			"The Secret Effects configuration is invalid.",
+		);
+	}
 	if (
 		bundle.project !== config.project ||
 		bundle.environment !== environment ||
 		bundle.schemaDigest !== expectedSchemaDigest
 	) {
-		throw new Error(
-			"The bundle does not match the requested repository scope.",
+		throw clientError(
+			"SCOPE",
+			"The bundle does not match the requested project, environment, and schema.",
 		);
 	}
-	const values = await openBundle(bundle, credential);
-	const schema = schemaForEnvironment(config, environment);
-	const runtimeEnv = Object.fromEntries(
-		Object.entries(values).filter(([, value]) => value !== ""),
-	);
-	const env = createEnv({
-		server: Object.fromEntries(
-			Object.entries(config.secrets).map(([name, definition]) => [
-				name,
-				definition.requiredIn.includes(environment)
-					? definition.schema
-					: definition.schema.optional(),
-			]),
-		),
-		runtimeEnv,
+	let secrets: Record<string, string>;
+	try {
+		secrets = await openBundle(bundle, credential);
+	} catch {
+		throw clientError(
+			"DECRYPTION",
+			"The Secret Effects bundle could not be verified and decrypted.",
+		);
+	}
+	try {
+		schemaForEnvironment(config, environment).parse(secrets);
+	} catch {
+		throw clientError(
+			"VALIDATION",
+			"The decrypted Secret Effects values are invalid.",
+		);
+	}
+	const mergedRuntimeEnv: RuntimeEnv = {
+		...runtimeEnv,
+		...secrets,
+		[CREDENTIAL_NAME]: undefined,
+	};
+	const server = serverSchemaForEnvironment(config, environment);
+	const createEnvOptions: RuntimeCreateEnvOptions = {
+		server,
+		client: config.client,
+		shared: config.shared,
+		clientPrefix: config.clientPrefix,
+		runtimeEnv: mergedRuntimeEnv,
 		emptyStringAsUndefined: true,
-	});
-	return schema.parse(env) as InferConfig<Config>;
+		isServer: true,
+		onValidationError: throwValidationError,
+	};
+	const env = createEnv(createEnvOptions);
+	return env as InferEnv<Config>;
 }
 
 /**
- * Reads the configured credential from the process environment.
+ * Validates one request deadline.
  *
- * @returns The configured credential string.
- * @throws {@link Error} When `SECRET_EFFECTS_KEY` is missing or empty.
+ * @param value - The optional timeout in milliseconds.
+ * @returns The validated timeout or the default timeout.
+ * @throws {@link SecretEffectsClientError} When the timeout is invalid.
  */
-function readCredentialFromRuntime(): string {
-	const value =
-		typeof process === "undefined" ? undefined : process.env.SECRET_EFFECTS_KEY;
+function validateTimeout(value: number | undefined): number {
+	const timeoutMs = value ?? DEFAULT_TIMEOUT_MS;
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+		throw clientError(
+			"VALIDATION",
+			"The Secret Effects timeout must be a positive integer.",
+		);
+	}
+	return timeoutMs;
+}
+
+/**
+ * Returns the process environment when a Node.js runtime provides it.
+ *
+ * @returns The process environment or an empty object in other runtimes.
+ */
+function defaultRuntimeEnv(): object {
+	return typeof process === "undefined" ? {} : process.env;
+}
+
+/**
+ * Copies supported primitive runtime bindings into a validation record.
+ *
+ * @param source - The Node.js environment or Worker bindings object.
+ * @returns The enumerable primitive runtime values.
+ */
+function normalizeRuntimeEnv(source: object): RuntimeEnv {
+	return Object.fromEntries(
+		Object.entries(source).filter(
+			(entry): entry is [string, string | number | boolean | undefined] =>
+				entry[1] === undefined ||
+				typeof entry[1] === "string" ||
+				typeof entry[1] === "number" ||
+				typeof entry[1] === "boolean",
+		),
+	);
+}
+
+/**
+ * Selects the explicit or runtime Secret Effects credential.
+ *
+ * @param explicit - The credential supplied for this load.
+ * @param runtimeEnv - The normalized runtime values.
+ * @returns The selected nonempty credential.
+ * @throws {@link SecretEffectsClientError} When no credential exists.
+ */
+function readCredential(
+	explicit: string | undefined,
+	runtimeEnv: RuntimeEnv,
+): string {
+	const value = explicit ?? runtimeEnv[CREDENTIAL_NAME];
 	if (typeof value !== "string" || value.length === 0) {
-		throw new Error("SECRET_EFFECTS_KEY is not configured.");
+		throw clientError("CREDENTIAL", `${CREDENTIAL_NAME} is not configured.`);
 	}
 	return value;
+}
+
+/**
+ * Validates the credential API as a bare HTTPS origin.
+ *
+ * @param value - The API URL from the signed credential.
+ * @returns The validated API URL.
+ * @throws {@link SecretEffectsClientError} When the URL is not a bare HTTPS origin.
+ */
+function validateApiOrigin(value: string): URL {
+	let api: URL;
+	try {
+		api = new URL(value);
+	} catch {
+		throw clientError("CREDENTIAL", "The credential API URL is invalid.");
+	}
+	if (
+		api.protocol !== "https:" ||
+		api.username !== "" ||
+		api.password !== "" ||
+		api.pathname !== "/" ||
+		api.search !== "" ||
+		api.hash !== ""
+	) {
+		throw clientError(
+			"CREDENTIAL",
+			"The credential API must contain a bare HTTPS origin.",
+		);
+	}
+	return api;
+}
+
+/**
+ * Reads and validates one bounded encrypted bundle response.
+ *
+ * @param response - The successful Secret Effects response.
+ * @param signal - The deadline signal shared with the request.
+ * @returns The validated encrypted bundle.
+ * @throws {@link SecretEffectsClientError} When the body is too large or invalid.
+ */
+async function readBundle(
+	response: Response,
+	signal: AbortSignal,
+): Promise<typeof SealedBundle.Type> {
+	const declaredLength = response.headers.get("content-length");
+	if (
+		declaredLength !== null &&
+		Number.parseInt(declaredLength, 10) > MAX_RESPONSE_BYTES
+	) {
+		throw clientError("RESPONSE", "The Secret Effects response is too large.");
+	}
+	if (response.body === null) {
+		throw clientError("RESPONSE", "The Secret Effects response has no body.");
+	}
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let length = 0;
+	try {
+		while (true) {
+			const result = await readChunk(reader, signal);
+			if (result.done) break;
+			length += result.value.byteLength;
+			if (length > MAX_RESPONSE_BYTES) {
+				await reader.cancel();
+				throw clientError(
+					"RESPONSE",
+					"The Secret Effects response is too large.",
+				);
+			}
+			chunks.push(result.value);
+		}
+	} catch (error) {
+		if (error instanceof SecretEffectsClientError) throw error;
+		throw clientError(
+			"RESPONSE",
+			"The Secret Effects response could not be read.",
+		);
+	}
+	const bytes = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	try {
+		const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+		return Schema.decodeUnknownSync(SealedBundle)(parsed);
+	} catch {
+		throw clientError("RESPONSE", "The Secret Effects response is invalid.");
+	}
+}
+
+/**
+ * Reads one response chunk within the request deadline.
+ *
+ * @param reader - The response body reader.
+ * @param signal - The deadline signal shared with the request.
+ * @returns The next stream read result.
+ * @throws {@link Error} When the deadline expires or the stream fails.
+ */
+async function readChunk(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+	if (signal.aborted) throw signal.reason;
+	return new Promise(
+		/**
+		 * Starts one abort-aware response body read.
+		 *
+		 * @param resolve - The callback that receives a stream read result.
+		 * @param reject - The callback that receives a stream or deadline failure.
+		 */
+		(resolve, reject) => {
+			/**
+			 * Cancels the active body read after the deadline expires.
+			 */
+			function abort() {
+				void reader.cancel(signal.reason).catch(() => undefined);
+				reject(signal.reason);
+			}
+			signal.addEventListener("abort", abort, { once: true });
+			reader
+				.read()
+				.then(resolve, reject)
+				.finally(
+					/**
+					 * Removes the deadline listener after the body read settles.
+					 */
+					() => {
+						signal.removeEventListener("abort", abort);
+					},
+				);
+		},
+	);
+}
+
+/**
+ * Rejects ambiguous ownership for each Secret Effects value.
+ *
+ * @param config - The repository configuration that identifies remote secrets.
+ * @param runtimeEnv - The normalized local runtime values.
+ * @throws {@link SecretEffectsClientError} When a local value conflicts with a remote secret.
+ */
+function rejectSourceConflicts(
+	config: SecretEffectsConfig,
+	runtimeEnv: RuntimeEnv,
+): void {
+	for (const name of Object.keys(config.secretDefinitions)) {
+		const value = runtimeEnv[name];
+		if (value !== undefined && value !== "") {
+			throw clientError(
+				"SOURCE_CONFLICT",
+				`${name} exists in both the runtime and Secret Effects sources.`,
+			);
+		}
+	}
+}
+
+/**
+ * Converts T3 validation issues into a value-free client error.
+ *
+ * @param issues - The Standard Schema validation issues.
+ * @throws {@link SecretEffectsClientError} Always, with only invalid variable names.
+ */
+function throwValidationError(
+	issues: readonly StandardSchemaV1.Issue[],
+): never {
+	const names = [
+		...new Set(
+			issues
+				.map(issuePathKey)
+				.filter((name): name is PropertyKey => name !== undefined)
+				.map(String),
+		),
+	].sort();
+	const suffix = names.length === 0 ? "" : `: ${names.join(", ")}`;
+	throw clientError("VALIDATION", `Environment validation failed${suffix}.`);
+}
+
+/**
+ * Returns the first property key from one Standard Schema issue path.
+ *
+ * @param issue - The validation issue that contains the optional path.
+ * @returns The first primitive key or structured path-segment key.
+ */
+function issuePathKey(issue: StandardSchemaV1.Issue): PropertyKey | undefined {
+	const segment = issue.path?.[0];
+	return typeof segment === "object" ? segment.key : segment;
+}
+
+/**
+ * Encodes one validated machine name for a request path.
+ *
+ * @param value - The machine name to encode.
+ * @returns The encoded path segment.
+ */
+function formatPathSegment(value: string): string {
+	return encodeURIComponent(value);
+}
+
+/**
+ * Creates one typed and value-free public client error.
+ *
+ * @param code - The stable error category.
+ * @param message - The safe public error message.
+ * @returns The typed client error.
+ */
+function clientError(
+	code: SecretEffectsClientErrorCode,
+	message: string,
+): SecretEffectsClientError {
+	return new SecretEffectsClientError({ code, message });
 }

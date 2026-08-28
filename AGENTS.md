@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`secret-effects` is a public, MIT-licensed secret service for Bearfire projects.
+`secret-effects` is a public, MIT-licensed secret service for Paperkeel projects.
 
 ## Commands
 
@@ -15,6 +15,13 @@
 - Never commit a credential, private key, secret value, environment file, or
   Alchemy state.
 - Never log a credential, private key, decrypted bundle, or secret value.
+- Never use Secret Effects to supply this repository's deployment or release secrets.
+- Configure bootstrap secrets in GitHub and inject Worker secrets through Alchemy.
+- Publish the npm client only from the canonical `paperkeel/secret-effects` repository.
+- Treat each successful canonical `master` CI run as a complete production
+  release.
+- Increment every workspace package version before a canonical merge to
+  `master`.
 - Cache only encrypted bundles.
 - Keep decrypted values in request-local memory.
 - Use Effect v4 for application services and typed errors.

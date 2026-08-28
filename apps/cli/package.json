@@ -1,6 +1,6 @@
 {
 	"name": "@secret-effects/cli",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
 	"bin": {
@@ -12,8 +12,6 @@
 	"dependencies": {
 		"@opentui/core": "0.5.8",
 		"@opentui/react": "0.5.8",
-		"@secret-effects/client": "workspace:*",
-		"@secret-effects/config": "workspace:*",
 		"@secret-effects/crypto": "workspace:*",
 		"@secret-effects/protocol": "workspace:*",
 		"react": "19.2.4"

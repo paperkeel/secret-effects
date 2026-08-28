@@ -17,6 +17,7 @@ import {
 } from "@secret-effects/protocol";
 import {
 	assembleCredential,
+	base64UrlToBytes,
 	bytesToBase64Url,
 	bytesToHex,
 	deriveKeys,
@@ -35,6 +36,7 @@ describe("encrypted environment bundles", bundleTests);
  * Groups signed credential tests.
  */
 function credentialTests() {
+	it("round-trips Web API base64url data", roundTripsBase64Url);
 	it("round-trips the signed self-contained credential", roundTripsCredential);
 	it(
 		"rejects a credential that changed after issuance",
@@ -44,6 +46,18 @@ function credentialTests() {
 		"rejects a changed signature after a valid checksum",
 		rejectsChangedSignature,
 	);
+}
+
+/**
+ * Tests portable base64url encoding and strict malformed input rejection.
+ */
+function roundTripsBase64Url() {
+	const bytes = new Uint8Array([0, 1, 2, 127, 128, 254, 255]);
+	const encoded = bytesToBase64Url(bytes);
+
+	expect(base64UrlToBytes(encoded)).toEqual(bytes);
+	expect(encoded).not.toMatch(/[+/=]/);
+	expect(() => base64UrlToBytes("a")).toThrow("base64url");
 }
 
 /**

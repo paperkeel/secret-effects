@@ -8,10 +8,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   check:
     runs-on: blacksmith-4vcpu-ubuntu-2404

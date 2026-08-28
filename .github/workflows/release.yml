@@ -1,24 +1,40 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
 
 permissions:
-  attestations: write
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: secret-effects-release
+  queue: max
 
 jobs:
-  release:
+  prepare:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
-    environment: release
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+    outputs:
+      published: ${{ steps.release.outputs.published }}
+      tag: ${{ steps.release.outputs.tag }}
+      tagged: ${{ steps.release.outputs.tagged }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Check out the signed tag
+      - name: Check out the successful commit
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          fetch-depth: 0
+          ref: ${{ env.DEPLOY_SHA }}
           persist-credentials: false
 
       - name: Install pnpm
@@ -29,45 +45,173 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check the signed tag and version
-        run: |
-          git fetch --force --no-tags origin \
-            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME" \
-            master:refs/remotes/origin/master
-          test "$(git rev-parse "$GITHUB_REF_NAME^{commit}")" = "$(git rev-parse origin/master)" || { echo "Tag the current master commit." >&2; exit 1; }
-          git -c gpg.ssh.allowedSignersFile="$GITHUB_WORKSPACE/.github/signing_allowed_signers" verify-tag "$GITHUB_REF_NAME" || { echo "Use an SSH-signed tag from an allowed signer." >&2; exit 1; }
-          test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME" || { echo "The package version must match the tag." >&2; exit 1; }
-
       - name: Check and build
         run: |
+          test "$DEPLOY_SHA" = "$(git rev-parse HEAD)" || { echo "The checkout does not match the successful CI commit." >&2; exit 1; }
           pnpm check
           pnpm build
 
-      - name: Create the release archive
-        id: archive
+      - name: Check the canonical release version
+        id: release
+        if: github.repository == 'paperkeel/secret-effects'
         run: |
+          version="$(node -p 'require("./package.json").version')"
+          tag="v$version"
+          for manifest in \
+            apps/api/package.json \
+            apps/cli/package.json \
+            packages/client/package.json \
+            packages/crypto/package.json \
+            packages/protocol/package.json
+          do
+            test "$(node -p "require('./$manifest').version")" = "$version" || { echo "$manifest must use version $version." >&2; exit 1; }
+          done
+
+          published="$(PACKAGE_VERSION="$version" node --input-type=module <<'NODE'
+          const name = "@paperkeel/secret-effects-client";
+          const version = process.env.PACKAGE_VERSION;
+          const response = await fetch(
+            `https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
+            { signal: AbortSignal.timeout(15_000) },
+          );
+          if (response.status === 404) {
+            process.stdout.write("false");
+          } else if (!response.ok) {
+            throw new Error(`The npm registry returned HTTP ${response.status}.`);
+          } else {
+            const metadata = await response.json();
+            if (metadata.gitHead !== process.env.DEPLOY_SHA) {
+              throw new Error(`${name}@${version} already belongs to another commit.`);
+            }
+            process.stdout.write("true");
+          }
+          NODE
+          )"
+
+          tagged=false
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            test "$(git rev-parse "$tag^{commit}")" = "$DEPLOY_SHA" || { echo "$tag already belongs to another commit." >&2; exit 1; }
+            git -c gpg.ssh.allowedSignersFile="$GITHUB_WORKSPACE/.github/signing_allowed_signers" verify-tag "$tag"
+            tagged=true
+          fi
+
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tagged=$tagged" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test the client package
+        run: |
+          version="$(node -p 'require("./packages/client/package.json").version')"
+          package="$RUNNER_TEMP/paperkeel-secret-effects-client-$version.tgz"
+          consumer="$RUNNER_TEMP/client-consumer"
+          pnpm --dir packages/client pack --pack-destination "$RUNNER_TEMP"
+          mkdir -p "$consumer"
+          pnpm --dir "$consumer" init
+          pnpm --dir "$consumer" add "$package"
+          pnpm --dir "$consumer" exec node --input-type=module -e 'const client = await import("@paperkeel/secret-effects-client"); if (typeof client.loadEnv !== "function" || typeof client.defineEnv !== "function" || typeof client.z?.string !== "function") process.exit(1);'
+
+  production:
+    needs: prepare
+    uses: ./.github/workflows/deploy.yml
+    with:
+      deploy_sha: ${{ github.event.workflow_run.head_sha }}
+    secrets: inherit
+
+  publish:
+    if: github.repository == 'paperkeel/secret-effects'
+    needs: [prepare, production]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Check out the deployed commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build release artifacts
+        run: |
+          test "$DEPLOY_SHA" = "$(git rev-parse HEAD)" || { echo "The checkout does not match the deployed commit." >&2; exit 1; }
+          test -n "$TAG" || { echo "The release tag is missing." >&2; exit 1; }
+          test -n "$VERSION" || { echo "The release version is missing." >&2; exit 1; }
+          pnpm build
           mkdir -p dist
-          archive="dist/secreteffects-${GITHUB_REF_NAME#v}-node.tar.gz"
+          archive="dist/secreteffects-$VERSION-node.tar.gz"
           tar -czf "$archive" -C apps/cli/dist secreteffects.js
           archive_name="$(basename "$archive")"
           (cd dist && sha256sum "$archive_name" > "$archive_name.sha256")
-          echo "path=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Create the signed release tag
+        if: needs.prepare.outputs.tagged != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$RELEASE_SIGNING_PRIVATE_KEY" || { echo "Set RELEASE_SIGNING_PRIVATE_KEY in the release environment." >&2; exit 1; }
+          signing_key="$RUNNER_TEMP/paperkeel-release-signing-key"
+          printf '%s\n' "$RELEASE_SIGNING_PRIVATE_KEY" > "$signing_key"
+          chmod 600 "$signing_key"
+          git config user.name "Paperkeel Release"
+          git config user.email "paperkeel-release@users.noreply.github.com"
+          git config gpg.format ssh
+          git config user.signingkey "$signing_key"
+          git config tag.gpgSign true
+          git tag --sign "$TAG" "$DEPLOY_SHA" --message "Release $TAG"
+          gh auth setup-git
+          git push origin "refs/tags/$TAG"
+          rm -f "$signing_key"
+
+      - name: Publish the canonical client package
+        if: github.repository == 'paperkeel/secret-effects' && needs.prepare.outputs.published != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo "Set NPM_TOKEN in the release environment." >&2; exit 1; }
+          pnpm --dir packages/client publish --no-git-checks --access public
 
       - name: Attest the release archive
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.archive.outputs.path }}
+          subject-path: dist/secreteffects-${{ needs.prepare.outputs.version }}-node.tar.gz
 
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "${{ steps.archive.outputs.path }}" \
-            "${{ steps.archive.outputs.path }}.sha256" \
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$TAG" \
+            "dist/secreteffects-$VERSION-node.tar.gz" \
+            "dist/secreteffects-$VERSION-node.tar.gz.sha256" \
             --generate-notes \
             --verify-tag

@@ -91,6 +91,9 @@ importers:
       wrangler:
         specifier: 4.127.0
         version: 4.127.0(@cloudflare/workers-types@5.20260827.1)
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   apps/api:
     dependencies:
@@ -121,12 +124,6 @@ importers:
       '@opentui/react':
         specifier: 0.5.8
         version: 0.5.8(react-devtools-core@7.0.1)(react@19.2.4)(typescript@5.9.3)(web-tree-sitter@0.25.10)(ws@8.21.3)
-      '@secret-effects/client':
-        specifier: workspace:*
-        version: link:../../packages/client
-      '@secret-effects/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       '@secret-effects/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
@@ -139,30 +136,34 @@ importers:
 
   packages/client:
     dependencies:
-      '@secret-effects/config':
-        specifier: workspace:*
-        version: link:../config
+      '@noble/curves':
+        specifier: 2.0.1
+        version: 2.0.1
+      '@noble/hashes':
+        specifier: 2.0.1
+        version: 2.0.1
+      '@t3-oss/env-core':
+        specifier: 0.13.11
+        version: 0.13.11(typescript@5.9.3)(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+      bs58:
+        specifier: 6.0.0
+        version: 6.0.0
+      cbor-x:
+        specifier: 1.6.6
+        version: 1.6.6
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
       '@secret-effects/crypto':
         specifier: workspace:*
         version: link:../crypto
       '@secret-effects/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@t3-oss/env-core':
-        specifier: 0.13.11
-        version: 0.13.11(typescript@5.9.3)(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-
-  packages/config:
-    dependencies:
-      '@secret-effects/protocol':
-        specifier: workspace:*
-        version: link:../protocol
-      zod:
-        specifier: 4.4.3
-        version: 4.4.3
 
   packages/crypto:
     dependencies:
