@@ -17,6 +17,10 @@ Queues. The project is API-only, open source, and available under the
 The setup has two stages. First, deploy your own service instance. Then migrate
 each application repository to that instance.
 
+In the canonical Paperkeel repository, each successful `master` CI run deploys
+and releases the same commit. Forks deploy from their own `master` branch and
+skip Paperkeel npm publication.
+
 ## Agent prompt 1: Deploy your instance
 
 Use this prompt with an agent that can access GitHub and your Cloudflare
@@ -68,8 +72,13 @@ account. Replace the values in angle brackets before you start.
 > - `SECRET_EFFECTS_GLOBAL_ADMIN_TOKEN`
 >
 > Configure `SECRET_EFFECTS_API_URL` as a production environment variable. Use
-> the final HTTPS Worker origin. Configure the protected `release` environment
-> only if I ask you to publish releases from the private repository.
+> the final HTTPS Worker origin. Do not configure npm publication in the
+> deployment repository. The canonical Paperkeel repository publishes the
+> shared client package.
+>
+> Do not create a Secret Effects project for this repository. GitHub must store
+> its bootstrap secrets. Alchemy must inject the required Worker bindings into
+> Cloudflare.
 >
 > Ask me if I want Sentry error monitoring. If I enable it, create or select one
 > Sentry JavaScript project. Store its DSN as the optional `SENTRY_DSN`
@@ -123,15 +132,14 @@ application repository, the `secreteffects` command, and the CI/CD credential.
 > Use the CI/CD credential to issue one Project credential. Save the credential
 > with mode `0600`. Do not commit it or configure it in an application runtime.
 >
-> Add a repository-owned Secret Effects configuration. Define every secret with
-> Zod and `@t3-oss/env-core`. Define accurate required environments. Use
+> Add a repository-owned Secret Effects configuration. Install the version-pinned
+> `@paperkeel/secret-effects-client` package. Import `defineEnv`, `secret`,
+> `loadEnv`, and `z` from that package. Define accurate required environments. Use
 > explicit mirrors when one environment must use another environment's value.
 > Keep public configuration outside Secret Effects.
 >
-> Use compatible, version-pinned `@secret-effects/config` and
-> `@secret-effects/client` packages. Prefer their public package releases. If no
-> release exists, use a reproducible package artifact from the exact Secret
-> Effects commit. Do not depend on a moving Git branch.
+> Use a public package release. If no release exists, use a reproducible package
+> artifact from the exact Secret Effects commit. Do not use a moving Git branch.
 >
 > Generate the public schema manifest from the repository configuration. Publish
 > the manifest with the Project credential. Create one Environment credential
@@ -165,14 +173,14 @@ application repository, the `secreteffects` command, and the CI/CD credential.
 | `apps/cli`          | `secreteffects` command interface and terminal interface |
 | `packages/protocol` | API schemas and shared names                             |
 | `packages/crypto`   | Credentials, signatures, and bundle encryption           |
-| `packages/config`   | Repository-owned Zod configuration                       |
-| `packages/client`   | Whole-environment runtime reader                         |
+| `packages/client`   | Published Zod, T3 Env, and runtime client                |
 | `migrations`        | D1 migrations                                            |
 | `alchemy.run.ts`    | Cloudflare infrastructure                                |
 
-The applications use the workspace packages for protocol, cryptography,
-configuration, and runtime loading. The API stores credential records, audit
-records, and encrypted bundles. It never decrypts bundle contents.
+Applications install `@paperkeel/secret-effects-client`. Internal service
+packages own the protocol and cryptography implementation. The API stores
+credential records, audit records, and encrypted bundles. It never decrypts
+bundle contents.
 
 ## Development
 

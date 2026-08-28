@@ -79,7 +79,7 @@ async function main(argv: readonly string[]): Promise<void> {
 		return;
 	}
 	if (group === "version" || group === "--version") {
-		process.stdout.write("secreteffects 0.1.0\n");
+		process.stdout.write("secreteffects 0.2.0\n");
 		return;
 	}
 	if (group === "tui") {

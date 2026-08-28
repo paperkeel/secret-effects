@@ -1,6 +1,6 @@
 {
 	"name": "secret-effects",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
 	"license": "MIT",
@@ -18,8 +18,9 @@
 		}
 	},
 	"scripts": {
+		"bootstrap:check": "node scripts/check-bootstrap-boundary.mjs",
 		"build": "pnpm -r --if-present build",
-		"check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+		"check": "pnpm bootstrap:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
 		"dev": "alchemy dev --stage dev",
 		"deploy": "alchemy deploy --stage prod --yes",
 		"format": "oxfmt .",

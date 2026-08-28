@@ -114,7 +114,12 @@ export function hexToBytes(value: string): Uint8Array {
  * @returns The base64url representation.
  */
 export function bytesToBase64Url(bytes: Uint8Array): string {
-	return Buffer.from(bytes).toString("base64url");
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary)
+		.replaceAll("+", "-")
+		.replaceAll("/", "_")
+		.replace(/=+$/, "");
 }
 
 /**
@@ -124,7 +129,18 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
  * @returns The decoded bytes.
  */
 export function base64UrlToBytes(value: string): Uint8Array {
-	return new Uint8Array(Buffer.from(value, "base64url"));
+	if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
+		throw new Error("The value is not valid base64url data.");
+	}
+	const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+	const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+	let binary: string;
+	try {
+		binary = atob(padded);
+	} catch {
+		throw new Error("The value is not valid base64url data.");
+	}
+	return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 /**

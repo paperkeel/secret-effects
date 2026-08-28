@@ -213,7 +213,12 @@ async function route(
 ): Promise<Response> {
 	const url = new URL(request.url);
 	if (request.method === "GET" && url.pathname === "/health") {
-		return json({ status: "ok", service: "secret-effects", version: 1 });
+		return json({
+			status: "ok",
+			service: "secret-effects",
+			version: 1,
+			release: env.SENTRY_RELEASE,
+		});
 	}
 	if (
 		request.method === "GET" &&

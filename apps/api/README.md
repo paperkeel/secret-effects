@@ -7,6 +7,9 @@ bundle storage, cache invalidation, and audit records.
 The application accepts signed API requests and delegates cryptography and wire
 schemas to workspace packages. It never decrypts a secret bundle.
 
+The public health response includes the deployed commit. The release workflow
+checks that commit before npm publication.
+
 ## Organization
 
 - `src/index.ts` routes API requests and coordinates Cloudflare resources.

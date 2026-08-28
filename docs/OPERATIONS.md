@@ -49,6 +49,16 @@ pnpm run deploy
 Alchemy owns D1, R2, Queue, Worker, cache, and Durable Object bindings. Production
 resources use retain protection and adopt existing named resources.
 
+In the canonical repository, each successful `master` CI run is a complete
+release. The release workflow checks and builds the exact commit. It deploys the
+commit, checks the commit from `/health`, publishes the matching npm package,
+creates a signed version tag, and creates the GitHub release.
+
+Increment the root, API, command interface, client, cryptography, and protocol
+versions before each canonical merge. The workflow rejects a version that
+belongs to a different commit. GitHub queues up to 100 release runs and does not
+replace an earlier pending `master` release.
+
 ## Bootstrap
 
 Build the command interface first.
@@ -121,6 +131,30 @@ The publication process receives only a signed public descriptor. It does not
 receive the Environment credential master key. Delete the plaintext values file
 after publication. Prefer a process-managed temporary file for automation.
 
+## Bootstrap secret boundary
+
+Secret Effects does not load its own deployment or release secrets. Configure
+these values manually in GitHub:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+- `SECRET_EFFECTS_ISSUER_PRIVATE_KEY`
+- `SECRET_EFFECTS_GLOBAL_ADMIN_TOKEN`
+- `SENTRY_DSN`, when Sentry is active
+- `NPM_TOKEN`, only in the canonical Paperkeel release environment
+- `RELEASE_SIGNING_PRIVATE_KEY`, only in the canonical Paperkeel release
+  environment
+
+Configure `SECRET_EFFECTS_API_URL` as a GitHub environment variable. The deploy
+workflow gives the values to Alchemy. Alchemy injects only the required Worker
+bindings into Cloudflare. Do not configure `SECRET_EFFECTS_KEY` for this
+repository.
+
+Forks and deployment copies do not publish the client package or create
+Paperkeel release tags. Their release workflow deploys the successful `master`
+commit and skips the canonical publication job. Applications install the
+canonical public package from Paperkeel.
+
 ## Runtime use
 
 Configure only one environment value in the runtime:
@@ -129,8 +163,10 @@ Configure only one environment value in the runtime:
 SECRET_EFFECTS_KEY=<environment-credential>
 ```
 
-Call `loadEnv(config)` from `@secret-effects/client`. The client obtains the
-service URL and scope from the credential.
+Install `@paperkeel/secret-effects-client`. Import `defineEnv`, `secret`,
+`loadEnv`, and `z` from that package. Call `loadEnv(config)` in the request or
+operation that needs the values. The client obtains the service URL and scope
+from the credential. It does not cache the decrypted result.
 
 ## Revoke a credential
 
