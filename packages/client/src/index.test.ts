@@ -65,6 +65,7 @@ function clientTests() {
 		"rejects an oversized response before reading it",
 		rejectsOversizedResponse,
 	);
+	it("rejects an oversized streamed response", rejectsOversizedStream);
 	it("stops a stalled response at the request deadline", stopsStalledResponse);
 }
 
@@ -180,6 +181,24 @@ async function rejectsOversizedResponse() {
 			headers: { "content-length": String(2 * 1024 * 1024 + 1) },
 		}),
 	);
+
+	await expect(
+		loadEnv(config, { credential, runtimeEnv: runtimeValues(), fetch }),
+	).rejects.toMatchObject({ code: "RESPONSE" });
+}
+
+/**
+ * Tests the size boundary when a response omits its declared length.
+ */
+async function rejectsOversizedStream() {
+	const credential = await issueTestCredential(
+		"environment",
+		"demo",
+		"production",
+	);
+	const fetch = vi
+		.fn<typeof globalThis.fetch>()
+		.mockResolvedValue(new Response(new Uint8Array(2 * 1024 * 1024 + 1)));
 
 	await expect(
 		loadEnv(config, { credential, runtimeEnv: runtimeValues(), fetch }),

@@ -6,7 +6,11 @@
  *
  * Boundary: Accepts a repository configuration and runtime bindings. It does not publish, persist, cache, log, or expose secret values.
  */
-import { createEnv } from "@t3-oss/env-core";
+import {
+	createEnv,
+	type EnvOptions,
+	type StandardSchemaV1,
+} from "@t3-oss/env-core";
 import * as Data from "effect/Data";
 import * as Schema from "effect/Schema";
 import {
@@ -77,24 +81,14 @@ export interface LoadEnvOptions<Environment extends string = string> {
 	timeoutMs?: number;
 }
 
-interface ValidationIssue {
-	path?: ReadonlyArray<PropertyKey>;
-}
-
-interface RuntimeCreateEnvOptions {
-	server: RuntimeSchemaRecord;
-	client: RuntimeSchemaRecord;
-	shared: RuntimeSchemaRecord;
-	clientPrefix?: string;
-	runtimeEnv: RuntimeEnv;
-	emptyStringAsUndefined: boolean;
-	isServer: boolean;
-	onValidationError: (issues: readonly ValidationIssue[]) => never;
-}
-
-const callCreateEnv = createEnv as unknown as (
-	options: RuntimeCreateEnvOptions,
-) => Readonly<Record<string, unknown>>;
+type RuntimeCreateEnvOptions = EnvOptions<
+	string | undefined,
+	RuntimeSchemaRecord,
+	RuntimeSchemaRecord,
+	RuntimeSchemaRecord,
+	[],
+	StandardSchemaV1<{}, Readonly<Record<string, unknown>>>
+>;
 
 /**
  * Loads, decrypts, merges, and validates one configured runtime environment.
@@ -262,18 +256,17 @@ async function loadValidatedEnv<Config extends SecretEffectsConfig>(
 		[CREDENTIAL_NAME]: undefined,
 	};
 	const server = serverSchemaForEnvironment(config, environment);
-	const env = callCreateEnv({
+	const createEnvOptions: RuntimeCreateEnvOptions = {
 		server,
 		client: config.client,
 		shared: config.shared,
-		...(config.clientPrefix === undefined
-			? {}
-			: { clientPrefix: config.clientPrefix }),
+		clientPrefix: config.clientPrefix,
 		runtimeEnv: mergedRuntimeEnv,
 		emptyStringAsUndefined: true,
 		isServer: true,
 		onValidationError: throwValidationError,
-	});
+	};
+	const env = createEnv(createEnvOptions);
 	return env as InferEnv<Config>;
 }
 
@@ -503,17 +496,30 @@ function rejectSourceConflicts(
  * @param issues - The Standard Schema validation issues.
  * @throws {@link SecretEffectsClientError} Always, with only invalid variable names.
  */
-function throwValidationError(issues: readonly ValidationIssue[]): never {
+function throwValidationError(
+	issues: readonly StandardSchemaV1.Issue[],
+): never {
 	const names = [
 		...new Set(
 			issues
-				.map((issue) => issue.path?.[0])
+				.map(issuePathKey)
 				.filter((name): name is PropertyKey => name !== undefined)
 				.map(String),
 		),
 	].sort();
 	const suffix = names.length === 0 ? "" : `: ${names.join(", ")}`;
 	throw clientError("VALIDATION", `Environment validation failed${suffix}.`);
+}
+
+/**
+ * Returns the first property key from one Standard Schema issue path.
+ *
+ * @param issue - The validation issue that contains the optional path.
+ * @returns The first primitive key or structured path-segment key.
+ */
+function issuePathKey(issue: StandardSchemaV1.Issue): PropertyKey | undefined {
+	const segment = issue.path?.[0];
+	return typeof segment === "object" ? segment.key : segment;
 }
 
 /**
