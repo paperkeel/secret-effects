@@ -176,7 +176,7 @@ records, and encrypted bundles. It never decrypts bundle contents.
 
 ## Development
 
-Use Node.js 24 or later and pnpm 10.33.4.
+Use Node.js 22.19.0 or later and pnpm 10.33.4.
 
 ```sh
 pnpm install
