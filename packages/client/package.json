@@ -1,6 +1,6 @@
 {
 	"name": "@paperkeel/secret-effects-client",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Type-safe Secret Effects environment loading for Node.js and Cloudflare Workers",
 	"type": "module",
 	"license": "MIT",

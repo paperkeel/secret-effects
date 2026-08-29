@@ -47,6 +47,11 @@ import { ProjectState } from "./project-state.ts";
 const encoder = new TextEncoder();
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const AUTH_WINDOW_MS = 5 * 60 * 1000;
+const FUTURE_SKEW_MS = 30 * 1000;
+const NONCE_RETENTION_MS = 2 * AUTH_WINDOW_MS;
+const BOOTSTRAP_RATE_LIMIT = 5;
+const BOOTSTRAP_RATE_WINDOW_MS = 60 * 1000;
+const MAX_SCHEMAS_PER_PROJECT = 100;
 
 class ApiError extends Data.TaggedError("ApiError")<{
 	status: number;
@@ -359,6 +364,7 @@ async function bootstrap(
 		authorization === null ||
 		!timingSafeEqualStrings(authorization, `Bearer ${env.GLOBAL_ADMIN_TOKEN}`)
 	) {
+		await enforceBootstrapRateLimit(env);
 		throw new ApiError({
 			status: 401,
 			code: "unauthorized",
@@ -392,7 +398,43 @@ async function bootstrap(
 }
 
 /**
- * Authenticates a signed request and rejects stale or replayed nonces.
+ * Counts rejected bootstrap attempts per fixed window and rejects the excess.
+ *
+ * @remarks
+ * Interaction: A catalog failure leaves the limiter open, and the token check still applies.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @returns A promise that completes when the attempt is within the limit.
+ * @throws {@link ApiError} When the rejected attempt count for the current window exceeds the limit.
+ */
+async function enforceBootstrapRateLimit(env: ApiEnv): Promise<void> {
+	const now = Date.now();
+	const cutoff = now - BOOTSTRAP_RATE_WINDOW_MS;
+	let row: { count: number } | null;
+	try {
+		row = await env.CATALOG.prepare(
+			`INSERT INTO rate_limits(key, window_start, count) VALUES ('bootstrap', ?, 1)
+			 ON CONFLICT(key) DO UPDATE SET
+			 count = CASE WHEN window_start < ? THEN 1 ELSE count + 1 END,
+			 window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END
+			 RETURNING count`,
+		)
+			.bind(now, cutoff, cutoff, now)
+			.first<{ count: number }>();
+	} catch {
+		return;
+	}
+	if ((row?.count ?? 0) > BOOTSTRAP_RATE_LIMIT) {
+		throw new ApiError({
+			status: 429,
+			code: "rate_limited",
+			message: "Too many bootstrap attempts. Retry later.",
+		});
+	}
+}
+
+/**
+ * Authenticates a signed request and rejects stale, future-dated, or replayed nonces.
  *
  * @param request - The inbound HTTP request.
  * @param env - The Cloudflare resource bindings for the service.
@@ -410,9 +452,11 @@ async function authenticate(
 	const nonce = requiredHeader(request, "x-secret-effects-nonce");
 	const signature = requiredHeader(request, "x-secret-effects-signature");
 	const timestampNumber = Number(timestamp);
+	const now = Date.now();
 	if (
 		!Number.isSafeInteger(timestampNumber) ||
-		Math.abs(Date.now() - timestampNumber) > AUTH_WINDOW_MS
+		timestampNumber - now > FUTURE_SKEW_MS ||
+		now - timestampNumber > AUTH_WINDOW_MS
 	) {
 		throw new ApiError({
 			status: 401,
@@ -471,7 +515,7 @@ async function authenticate(
 			).bind(Date.now()),
 			env.CATALOG.prepare(
 				"INSERT INTO request_nonces(credential_id, nonce, expires_at) VALUES (?, ?, ?)",
-			).bind(identifier, nonce, Date.now() + AUTH_WINDOW_MS),
+			).bind(identifier, nonce, Date.now() + NONCE_RETENTION_MS),
 		]);
 	} catch {
 		throw new ApiError({
@@ -663,7 +707,10 @@ async function issueCredential(
 }
 
 /**
- * Signs, audits, and persists one authorized credential.
+ * Signs and persists one authorized credential, then records its audit event.
+ *
+ * @remarks
+ * Interaction: An audit append failure is reported to monitoring and does not fail the issuance response.
  *
  * @param env - The Cloudflare resource bindings for the service.
  * @param issue - The credential fields that the issuer must validate and sign.
@@ -695,13 +742,6 @@ async function persistIssuedCredential(
 	};
 	const payloadBytes = await encodeCredentialPayload(payload);
 	const signature = signPayload(payloadBytes, issuerPrivateKey);
-	await appendAudit(env, issuedBy, {
-		action: "credential.issue.authorized",
-		project: issue.project,
-		environment: issue.environment,
-		subject: identifier,
-		details: { type: issue.type, issuedBy, expiresAt: issue.expiresAt },
-	});
 	try {
 		await env.CATALOG.prepare(
 			`INSERT INTO credentials(identifier, type, project, environment, auth_public_key, decrypt_public_key, status, issued_at, expires_at, issued_by)
@@ -733,6 +773,17 @@ async function persistIssuedCredential(
 			});
 		}
 		throw cause;
+	}
+	try {
+		await appendAudit(env, issuedBy, {
+			action: "credential.issue.authorized",
+			project: issue.project,
+			environment: issue.environment,
+			subject: identifier,
+			details: { type: issue.type, issuedBy, expiresAt: issue.expiresAt },
+		});
+	} catch (cause) {
+		Sentry.captureException(cause);
 	}
 	return json(
 		{
@@ -771,7 +822,7 @@ async function listCredentials(
 }
 
 /**
- * Revokes one active subordinate credential.
+ * Revokes one active credential.
  *
  * @param env - The Cloudflare resource bindings for the service.
  * @param actor - The authenticated credential or issuer identity that authorizes the operation.
@@ -808,7 +859,7 @@ async function revokeCredential(
 	}
 	const allowed =
 		actor.type === "global"
-			? ["cicd", "project", "agent", "environment"]
+			? ["global", "cicd", "project", "agent", "environment"]
 			: actor.type === "cicd"
 				? ["project", "agent", "environment"]
 				: actor.type === "project"
@@ -911,11 +962,27 @@ async function registerSchema(
 		});
 	}
 	if (existing === null) {
-		await env.CATALOG.prepare(
-			"INSERT INTO schema_manifests(project, digest, manifest, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
+		const inserted = await env.CATALOG.prepare(
+			`INSERT INTO schema_manifests(project, digest, manifest, created_at, created_by)
+			 SELECT ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM schema_manifests WHERE project = ?) < ?`,
 		)
-			.bind(project, input.digest, manifestText, Date.now(), actor.identifier)
+			.bind(
+				project,
+				input.digest,
+				manifestText,
+				Date.now(),
+				actor.identifier,
+				project,
+				MAX_SCHEMAS_PER_PROJECT,
+			)
 			.run();
+		if (inserted.meta.changes === 0) {
+			throw new ApiError({
+				status: 409,
+				code: "schema_limit_reached",
+				message: "The project reached its schema manifest limit.",
+			});
+		}
 		await appendAudit(env, actor, {
 			action: "schema.register",
 			project,
@@ -1003,6 +1070,12 @@ async function publishBundle(
 			message: "Register the repository schema before bundle publication.",
 		});
 	}
+	await validateBundleRecipients(
+		env,
+		project,
+		environment,
+		input.bundle.recipients,
+	);
 	const {
 		signature,
 		serviceSignature: _serviceSignature,
@@ -1061,6 +1134,13 @@ async function publishBundle(
 			message: "The environment changed after the client loaded it.",
 		});
 	}
+	if (outcome.status === "version_reused") {
+		throw new ApiError({
+			status: 409,
+			code: "bundle_version_reused",
+			message: "The bundle content version was already published.",
+		});
+	}
 	const result = outcome.result;
 	const purge = await purgeCache(
 		ctx,
@@ -1089,6 +1169,47 @@ async function publishBundle(
 		{ ...result, cache: purge ? "purged" : "pending" },
 		result.replayed ? 200 : 201,
 	);
+}
+
+/**
+ * Validates that each bundle recipient is an active credential of the target scope.
+ *
+ * @param env - The Cloudflare resource bindings for the service.
+ * @param project - The machine name of the target project.
+ * @param environment - The machine name of the target environment.
+ * @param recipients - The recipient records named by the bundle envelope.
+ * @returns A promise that completes when every recipient is in scope.
+ * @throws {@link ApiError} When a recipient is not an active project or matching environment credential.
+ */
+async function validateBundleRecipients(
+	env: ApiEnv,
+	project: string,
+	environment: string,
+	recipients: readonly { identifier: string }[],
+): Promise<void> {
+	const rows = await env.CATALOG.prepare(
+		`SELECT identifier, type, environment FROM credentials
+		 WHERE project = ? AND status = 'active' AND type IN ('project', 'environment')`,
+	)
+		.bind(project)
+		.all<{ identifier: string; type: string; environment: string | null }>();
+	const index = new Map(
+		rows.results.map((row) => [row.identifier as string, row]),
+	);
+	for (const recipient of recipients) {
+		const row = index.get(recipient.identifier);
+		if (
+			row === undefined ||
+			(row.type === "environment" && row.environment !== environment)
+		) {
+			throw new ApiError({
+				status: 400,
+				code: "invalid_bundle_recipient",
+				message:
+					"The bundle names a recipient outside the active credentials of this environment.",
+			});
+		}
+	}
 }
 
 /**
@@ -1401,7 +1522,7 @@ function assertScope(
 }
 
 /**
- * Reads a request body within the service size limit.
+ * Reads a request body within the service size limit and cancels oversized streams.
  *
  * @param request - The inbound HTTP request.
  * @returns The bounded request bytes.
@@ -1416,15 +1537,46 @@ async function readBody(request: Request): Promise<Uint8Array> {
 			message: "The request body exceeds the service limit.",
 		});
 	}
-	const body = new Uint8Array(await request.arrayBuffer());
-	if (body.byteLength > MAX_BODY_BYTES) {
-		throw new ApiError({
-			status: 413,
-			code: "body_too_large",
-			message: "The request body exceeds the service limit.",
-		});
+	if (request.body === null) {
+		return new Uint8Array(0);
 	}
-	return body;
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	while (true) {
+		const result = await reader.read();
+		if (result.done) {
+			break;
+		}
+		total += result.value.byteLength;
+		if (total > MAX_BODY_BYTES) {
+			await reader.cancel().catch(() => undefined);
+			throw new ApiError({
+				status: 413,
+				code: "body_too_large",
+				message: "The request body exceeds the service limit.",
+			});
+		}
+		chunks.push(result.value);
+	}
+	return concatChunks(chunks, total);
+}
+
+/**
+ * Concatenates bounded body chunks into one byte array.
+ *
+ * @param chunks - The collected body chunks in stream order.
+ * @param total - The exact combined byte count of all chunks.
+ * @returns The combined request bytes.
+ */
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+	const output = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		output.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return output;
 }
 
 /**
@@ -1467,21 +1619,19 @@ function requiredHeader(request: Request, name: string): string {
 }
 
 /**
- * Compares equal-length strings without data-dependent early exit.
+ * Compares fixed-length SHA-256 digests without data-dependent early exit.
  *
  * @param left - The first string in the constant-time comparison.
  * @param right - The second string in the constant-time comparison.
  * @returns True when both strings contain equal bytes.
  */
 function timingSafeEqualStrings(left: string, right: string): boolean {
-	const leftBytes = encoder.encode(left);
-	const rightBytes = encoder.encode(right);
-	if (leftBytes.byteLength !== rightBytes.byteLength) {
-		return false;
-	}
+	const leftDigest = sha256(encoder.encode(left));
+	const rightDigest = sha256(encoder.encode(right));
 	let difference = 0;
-	for (let index = 0; index < leftBytes.byteLength; index += 1) {
-		difference |= (leftBytes[index] as number) ^ (rightBytes[index] as number);
+	for (let index = 0; index < leftDigest.byteLength; index += 1) {
+		difference |=
+			(leftDigest[index] as number) ^ (rightDigest[index] as number);
 	}
 	return difference === 0;
 }

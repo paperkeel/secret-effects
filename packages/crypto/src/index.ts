@@ -58,6 +58,11 @@ export interface PublicCredential {
 	signature: Uint8Array;
 }
 
+export interface CredentialTrust {
+	issuerPublicKey: string;
+	apiOrigin?: string;
+}
+
 export interface BundlePlaintext {
 	values: Record<string, string>;
 }
@@ -281,11 +286,14 @@ export function assembleCredential(
  * Parses and verifies one active Secret Effects credential.
  *
  * @param rendered - The complete rendered credential string.
+ * @param trust - The pinned issuer key and API origin from an external source.
  * @returns The verified active credential and derived keys.
  * @throws {@link Error} When credential, key, or bundle data fails validation.
+ * @throws {@link Error} When the embedded issuer key or API origin does not match the pinned trust anchor.
  */
 export async function parseCredential(
 	rendered: string,
+	trust?: CredentialTrust,
 ): Promise<ParsedCredential> {
 	const match = CREDENTIAL_PATTERN.exec(rendered);
 	if (match === null) {
@@ -311,6 +319,7 @@ export async function parseCredential(
 	const signature = bs58.decode(signatureText);
 	const masterKey = hexToBytes(keyText);
 	const payload = await decodeCredentialPayload(payloadBytes);
+	assertPinnedTrust(payload, trust, "credential");
 	const issuerPublicKey = hexToBytes(payload.issuerPublicKey);
 	if (!verifyPayload(payloadBytes, signature, issuerPublicKey)) {
 		throw new Error("The Secret Effects credential signature is invalid.");
@@ -354,15 +363,19 @@ export function exportPublicCredential(
  * Parses and verifies one active public credential descriptor.
  *
  * @param descriptor - The signed public credential fields to verify.
+ * @param trust - The pinned issuer key and API origin from an external source.
  * @returns The verified active public credential.
  * @throws {@link Error} When credential, key, or bundle data fails validation.
+ * @throws {@link Error} When the embedded issuer key or API origin does not match the pinned trust anchor.
  */
 export async function parsePublicCredential(
 	descriptor: CredentialIssueResponse,
+	trust?: CredentialTrust,
 ): Promise<PublicCredential> {
 	const payloadBytes = base64UrlToBytes(descriptor.payload);
 	const signature = base64UrlToBytes(descriptor.signature);
 	const payload = await decodeCredentialPayload(payloadBytes);
+	assertPinnedTrust(payload, trust, "public credential");
 	if (
 		!verifyPayload(payloadBytes, signature, hexToBytes(payload.issuerPublicKey))
 	) {
@@ -776,4 +789,50 @@ function recipientContext(
 			bytesToHex(recipientPublicKey),
 		].join("\n"),
 	);
+}
+
+/**
+ * Rejects a payload whose issuer key or API origin departs from the pinned trust anchor.
+ *
+ * @param payload - The decoded credential payload under verification.
+ * @param trust - The pinned issuer key and API origin, or undefined to skip pinning.
+ * @param label - The subject name for the failure message.
+ * @throws {@link Error} When the embedded issuer key does not match the pinned issuer key.
+ * @throws {@link Error} When the payload API origin does not match the pinned API origin.
+ */
+function assertPinnedTrust(
+	payload: CredentialPayload,
+	trust: CredentialTrust | undefined,
+	label: string,
+): void {
+	if (trust === undefined) {
+		return;
+	}
+	if (payload.issuerPublicKey !== trust.issuerPublicKey) {
+		throw new Error(
+			`The ${label} issuer key does not match the pinned trust anchor.`,
+		);
+	}
+	if (
+		trust.apiOrigin !== undefined &&
+		safeOrigin(payload.api) !== trust.apiOrigin
+	) {
+		throw new Error(
+			`The ${label} API origin does not match the pinned trust origin.`,
+		);
+	}
+}
+
+/**
+ * Returns the origin of a payload API URL, or the raw value when parsing fails.
+ *
+ * @param value - The API URL text inside a credential payload.
+ * @returns The normalized origin, or the raw text when the value is not an absolute URL.
+ */
+function safeOrigin(value: string): string {
+	try {
+		return new URL(value).origin;
+	} catch {
+		return value;
+	}
 }

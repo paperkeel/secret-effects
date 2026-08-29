@@ -21,6 +21,8 @@ const CredentialIdentifier = Schema.String.check(
 	Schema.isPattern(/^[0-9a-f]{32}$/),
 );
 const PublicKey = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+const BundleVersion = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+const FiniteTimestamp = Schema.Number.check(Schema.isFinite());
 
 export const CredentialType = Schema.Literals([
 	"global",
@@ -54,7 +56,7 @@ export const CredentialIssueRequest = Schema.Struct({
 	environment: Schema.NullOr(MachineName),
 	authPublicKey: PublicKey,
 	decryptPublicKey: Schema.NullOr(PublicKey),
-	expiresAt: Schema.NullOr(Schema.Number),
+	expiresAt: Schema.NullOr(FiniteTimestamp),
 });
 export type CredentialIssueRequest = typeof CredentialIssueRequest.Type;
 
@@ -76,8 +78,8 @@ export const SealedBundle = Schema.Struct({
 	format: Schema.Literal("secret-effects-bundle-v1"),
 	project: Schema.String,
 	environment: Schema.String,
-	contentVersion: Schema.String,
-	envelopeVersion: Schema.String,
+	contentVersion: BundleVersion,
+	envelopeVersion: BundleVersion,
 	schemaDigest: Schema.String,
 	createdAt: Schema.Number,
 	nonce: Schema.String,

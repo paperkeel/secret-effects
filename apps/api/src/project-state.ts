@@ -37,7 +37,8 @@ export interface PublishResult extends CurrentBundle {
 
 export type PublishOutcome =
 	| { status: "published"; result: PublishResult }
-	| { status: "conflict" };
+	| { status: "conflict" }
+	| { status: "version_reused" };
 
 export class ProjectState extends DurableObject<ApiEnv> {
 	/**
@@ -119,10 +120,11 @@ export class ProjectState extends DurableObject<ApiEnv> {
 	 *
 	 * @param name - The environment, option, header, or variable name for the operation.
 	 * @returns A promise that completes after the operation finishes.
+	 * @throws {@link Error} When the environment name already exists in the object storage.
 	 */
 	async createEnvironment(name: string): Promise<void> {
 		this.ctx.storage.sql.exec(
-			"INSERT OR IGNORE INTO environments(name, is_default, created_at) VALUES (?, 0, ?)",
+			"INSERT INTO environments(name, is_default, created_at) VALUES (?, 0, ?)",
 			name,
 			Date.now(),
 		);
@@ -130,6 +132,9 @@ export class ProjectState extends DurableObject<ApiEnv> {
 
 	/**
 	 * Publishes one encrypted bundle with optimistic and idempotent coordination.
+	 *
+	 * @remarks
+	 * Side effects: Stores the bundle object before coordination and deletes orphaned or superseded objects after the outcome.
 	 *
 	 * @param input - The validated operation data at this boundary.
 	 * @returns The publication outcome with replay or conflict status.
@@ -159,6 +164,11 @@ export class ProjectState extends DurableObject<ApiEnv> {
 					replayed: true,
 				},
 			};
+		}
+
+		const liveObject = await this.current(input.environment);
+		if (liveObject !== null && liveObject.objectKey === input.objectKey) {
+			return { status: "version_reused" };
 		}
 
 		await this.env.BUNDLES.put(input.objectKey, input.bundle, {
@@ -192,6 +202,10 @@ export class ProjectState extends DurableObject<ApiEnv> {
 					)
 					.toArray()[0];
 				if (replay !== undefined) {
+					await this.deleteOrphan(
+						input.objectKey,
+						await this.current(input.environment),
+					);
 					return {
 						status: "published" as const,
 						result: {
@@ -207,7 +221,20 @@ export class ProjectState extends DurableObject<ApiEnv> {
 
 				const before = await this.current(input.environment);
 				if ((before?.contentVersion ?? null) !== input.baseVersion) {
+					await this.deleteOrphan(input.objectKey, before);
 					return { status: "conflict" as const };
+				}
+
+				const reused = this.ctx.storage.sql
+					.exec(
+						"SELECT 1 FROM operations WHERE environment = ? AND content_version = ? LIMIT 1",
+						input.environment,
+						input.contentVersion,
+					)
+					.toArray()[0];
+				if (reused !== undefined) {
+					await this.deleteOrphan(input.objectKey, before);
+					return { status: "version_reused" as const };
 				}
 
 				const previous =
@@ -272,6 +299,10 @@ export class ProjectState extends DurableObject<ApiEnv> {
 					},
 				);
 
+				if (before !== null && before.objectKey !== input.objectKey) {
+					await this.deleteOrphan(before.objectKey, null);
+				}
+
 				return {
 					status: "published" as const,
 					result: {
@@ -285,6 +316,27 @@ export class ProjectState extends DurableObject<ApiEnv> {
 				};
 			},
 		);
+	}
+
+	/**
+	 * Deletes one stored bundle object unless it is the live pointer target.
+	 *
+	 * @param objectKey - The object key that the outcome no longer references.
+	 * @param live - The current bundle pointer, or null when deletion is always safe.
+	 * @returns A promise that completes after the deletion attempt.
+	 */
+	private async deleteOrphan(
+		objectKey: string,
+		live: CurrentBundle | null,
+	): Promise<void> {
+		if (live !== null && live.objectKey === objectKey) {
+			return;
+		}
+		try {
+			await this.env.BUNDLES.delete(objectKey);
+		} catch {
+			return;
+		}
 	}
 
 	/**

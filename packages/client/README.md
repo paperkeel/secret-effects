@@ -13,7 +13,7 @@ Effects. It combines these functions:
 Install only this package:
 
 ```sh
-pnpm add @paperkeel/secret-effects-client@0.2.0
+pnpm add @paperkeel/secret-effects-client@0.2.1
 ```
 
 Paperkeel publishes this package from the canonical Secret Effects repository.
@@ -87,6 +87,9 @@ This rule prevents silent source precedence.
 The client fetches and decrypts a new bundle for each call. It does not cache a
 decrypted result. Keep the returned object in the request or operation that
 needs it.
+
+Before each bundle request, the client reads the service well-known record. It
+uses that record to check the credential issuer key and API origin.
 
 Each request has a 10-second deadline. Set `timeoutMs` in the `loadEnv` options
 when an application needs a shorter deadline.

@@ -34,6 +34,7 @@ import {
 } from "./index.ts";
 
 const issuerPrivateKey = new Uint8Array(32).fill(11);
+const issuerPublicKey = bytesToHex(ed25519.getPublicKey(issuerPrivateKey));
 const config = defineEnv({
 	project: "demo",
 	server: {
@@ -60,6 +61,7 @@ function clientTests() {
 		loadsProjectEnvironment,
 	);
 	it("does not cache decrypted environments", doesNotCacheEnvironment);
+	it("rejects a credential from another issuer", rejectsUnpinnedIssuer);
 	it("rejects conflicting local secret values", rejectsSourceConflict);
 	it(
 		"rejects an oversized response before reading it",
@@ -127,10 +129,10 @@ async function loadsProjectEnvironment() {
 async function doesNotCacheEnvironment() {
 	const first = await createFixture("first-secret");
 	const second = await createFixture("second-secret", first.credential);
-	const fetch = vi
-		.fn<typeof globalThis.fetch>()
-		.mockImplementationOnce(first.fetch)
-		.mockImplementationOnce(second.fetch);
+	const fetch = createServiceFetch([
+		Response.json(first.bundle),
+		Response.json(second.bundle),
+	]);
 	const options = {
 		credential: first.credential,
 		runtimeEnv: runtimeValues(),
@@ -143,7 +145,27 @@ async function doesNotCacheEnvironment() {
 	await expect(loadEnv(config, options)).resolves.toMatchObject({
 		API_TOKEN: "second-secret",
 	});
-	expect(fetch).toHaveBeenCalledTimes(2);
+	expect(fetch).toHaveBeenCalledTimes(4);
+}
+
+/**
+ * Tests rejection when the service issuer does not match the credential.
+ */
+async function rejectsUnpinnedIssuer() {
+	const fixture = await createFixture("remote-secret");
+	const fetch = createServiceFetch(
+		[Response.json(fixture.bundle)],
+		"e".repeat(64),
+	);
+
+	await expect(
+		loadEnv(config, {
+			credential: fixture.credential,
+			runtimeEnv: runtimeValues(),
+			fetch,
+		}),
+	).rejects.toMatchObject({ code: "CREDENTIAL" });
+	expect(fetch).toHaveBeenCalledTimes(1);
 }
 
 /**
@@ -176,11 +198,11 @@ async function rejectsOversizedResponse() {
 		"demo",
 		"production",
 	);
-	const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+	const fetch = createServiceFetch([
 		new Response("{}", {
 			headers: { "content-length": String(2 * 1024 * 1024 + 1) },
 		}),
-	);
+	]);
 
 	await expect(
 		loadEnv(config, { credential, runtimeEnv: runtimeValues(), fetch }),
@@ -196,9 +218,9 @@ async function rejectsOversizedStream() {
 		"demo",
 		"production",
 	);
-	const fetch = vi
-		.fn<typeof globalThis.fetch>()
-		.mockResolvedValue(new Response(new Uint8Array(2 * 1024 * 1024 + 1)));
+	const fetch = createServiceFetch([
+		new Response(new Uint8Array(2 * 1024 * 1024 + 1)),
+	]);
 
 	await expect(
 		loadEnv(config, { credential, runtimeEnv: runtimeValues(), fetch }),
@@ -214,13 +236,13 @@ async function stopsStalledResponse() {
 		"demo",
 		"production",
 	);
-	const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+	const fetch = createServiceFetch([
 		new Response(
 			new ReadableStream({
 				start: () => undefined,
 			}),
 		),
-	);
+	]);
 
 	await expect(
 		loadEnv(config, {
@@ -266,11 +288,48 @@ async function createFixture(value: string, existingCredential?: string) {
 	});
 	const bundle = acceptTestBundle(draft);
 	return {
+		bundle,
 		credential,
-		fetch: vi
-			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(Response.json(bundle)),
+		fetch: createServiceFetch([Response.json(bundle)]),
 	};
+}
+
+/**
+ * Creates a service fetch implementation with issuer and bundle responses.
+ *
+ * @param bundleResponses - The ordered encrypted bundle responses for client loads.
+ * @param trustedIssuerPublicKey - The issuer key returned by the well-known endpoint.
+ * @returns The mock service fetch implementation.
+ */
+function createServiceFetch(
+	bundleResponses: Response[],
+	trustedIssuerPublicKey = issuerPublicKey,
+) {
+	const remainingBundles = [...bundleResponses];
+	/**
+	 * Returns the issuer record or the next encrypted bundle response.
+	 *
+	 * @param input - The service request URL or request object.
+	 * @returns The matching service response.
+	 * @throws {@link Error} When no bundle response remains.
+	 */
+	async function request(
+		input: Parameters<typeof globalThis.fetch>[0],
+	): Promise<Response> {
+		const url = input instanceof Request ? input.url : String(input);
+		if (url.endsWith("/.well-known/secret-effects")) {
+			return Response.json({
+				version: 1,
+				issuerPublicKey: trustedIssuerPublicKey,
+			});
+		}
+		const response = remainingBundles.shift();
+		if (response === undefined) {
+			throw new Error("No test bundle response remains.");
+		}
+		return response;
+	}
+	return vi.fn<typeof globalThis.fetch>().mockImplementation(request);
 }
 
 /**
@@ -293,7 +352,7 @@ async function issueTestCredential(
 		version: 1,
 		api: "https://secrets.example.com",
 		issuer: "testissuer",
-		issuerPublicKey: bytesToHex(ed25519.getPublicKey(issuerPrivateKey)),
+		issuerPublicKey,
 		type,
 		project,
 		environment,

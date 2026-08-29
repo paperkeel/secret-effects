@@ -33,6 +33,8 @@ import { canonicalJson } from "@secret-effects/protocol";
 
 class CliError extends Data.TaggedError("CliError")<{ message: string }> {}
 
+const wellKnownCache = new Map<string, WellKnownRecord>();
+
 const program = Effect.tryPromise({
 	try: () => main(process.argv.slice(2)),
 	catch: (cause) =>
@@ -381,11 +383,17 @@ async function publishBundle(args: readonly string[]): Promise<void> {
 			publicKey: author.keys.decryptPublicKey,
 		},
 	];
+	const recipientWellKnown = await fetchWellKnown(
+		new URL(author.payload.api).origin,
+	);
 	for (const path of recipientPaths) {
 		const descriptor = parsePublicDescriptor(
 			JSON.parse(await readTextFile(path)),
 		);
-		const recipient = await parsePublicCredential(descriptor);
+		const recipient = await parsePublicCredential(descriptor, {
+			issuerPublicKey: recipientWellKnown.issuerPublicKey,
+			apiOrigin: recipientWellKnown.origin,
+		});
 		if (
 			recipient.payload.project !== author.payload.project ||
 			recipient.payload.decryptPublicKey === null ||
@@ -599,12 +607,99 @@ async function authenticatedFetch(
 }
 
 /**
- * Parses the credential from the process environment.
+ * Parses the credential from the process environment and pins its issuer key.
  *
- * @returns The parsed active credential.
+ * @returns The parsed active credential with a verified issuer key.
+ * @throws {@link CliError} When the credential is missing or fails trust verification.
  */
 async function configuredCredential() {
-	return parseCredential(requiredEnv("SECRET_EFFECTS_KEY"));
+	const rendered = requiredEnv("SECRET_EFFECTS_KEY");
+	const candidate = await parseCredential(rendered);
+	const api = new URL(candidate.payload.api);
+	if (api.protocol !== "https:") {
+		throw new CliError({
+			message: "The credential API origin must use HTTPS.",
+		});
+	}
+	const wellKnown = await fetchWellKnown(api.origin);
+	return parseCredential(rendered, {
+		issuerPublicKey: wellKnown.issuerPublicKey,
+		apiOrigin: wellKnown.origin,
+	});
+}
+
+/**
+ * Fetches and caches the pinned issuer record for one service origin.
+ *
+ * @param origin - The HTTPS service origin that hosts the well-known record.
+ * @returns The cached or fetched well-known record.
+ * @throws {@link CliError} When the origin is not HTTPS, or the record is unreachable or has an invalid shape.
+ */
+async function fetchWellKnown(origin: string): Promise<WellKnownRecord> {
+	const cached = wellKnownCache.get(origin);
+	if (cached !== undefined) {
+		return cached;
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(origin);
+	} catch {
+		throw new CliError({
+			message: "The credential API origin is not an absolute URL.",
+		});
+	}
+	if (parsed.protocol !== "https:") {
+		throw new CliError({
+			message: "The credential API origin must use HTTPS.",
+		});
+	}
+	let response: Response;
+	try {
+		response = await fetch(`${origin}/.well-known/secret-effects`);
+	} catch (cause) {
+		throw new CliError({
+			message: `The service well-known record is unreachable. ${
+				cause instanceof Error ? cause.message : ""
+			}`.trim(),
+		});
+	}
+	if (!response.ok) {
+		throw new CliError({
+			message: `The service well-known record returned HTTP ${response.status}.`,
+		});
+	}
+	let record: unknown;
+	try {
+		record = await response.json();
+	} catch {
+		throw new CliError({
+			message: "The service well-known record is not valid JSON.",
+		});
+	}
+	if (
+		typeof record !== "object" ||
+		record === null ||
+		!("version" in record) ||
+		record.version !== 1 ||
+		!("issuerPublicKey" in record) ||
+		typeof record.issuerPublicKey !== "string" ||
+		!/^[0-9a-f]{64}$/.test(record.issuerPublicKey)
+	) {
+		throw new CliError({
+			message: "The service well-known record has an invalid shape.",
+		});
+	}
+	const wellKnown: WellKnownRecord = {
+		origin,
+		issuerPublicKey: record.issuerPublicKey,
+	};
+	wellKnownCache.set(origin, wellKnown);
+	return wellKnown;
+}
+
+interface WellKnownRecord {
+	origin: string;
+	issuerPublicKey: string;
 }
 
 /**
