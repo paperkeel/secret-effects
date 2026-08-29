@@ -196,7 +196,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           test -n "$NODE_AUTH_TOKEN" || { echo "Set NPM_TOKEN in the release environment." >&2; exit 1; }
-          pnpm --dir packages/client publish --no-git-checks --access public
+          cd packages/client
+          pnpm publish --no-git-checks --access public
 
       - name: Attest the release archive
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
