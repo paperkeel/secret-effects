@@ -202,6 +202,10 @@ export class ProjectState extends DurableObject<ApiEnv> {
 					)
 					.toArray()[0];
 				if (replay !== undefined) {
+					await this.deleteOrphan(
+						input.objectKey,
+						await this.current(input.environment),
+					);
 					return {
 						status: "published" as const,
 						result: {
