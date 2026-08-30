@@ -273,7 +273,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
-          path: ${{ runner.temp }}/release-artifacts
+          path: ${{ env.ARTIFACT_DIR }}
           digest-mismatch: error
 
       - name: Verify the Blacksmith artifact
@@ -313,7 +313,9 @@ jobs:
 
       - name: Publish with npm Trusted Publishing
         if: needs.prepare.outputs.published != 'true'
-        run: npm publish "${{ steps.artifact.outputs.package_path }}" --ignore-scripts --access public
+        env:
+          PACKAGE_PATH: ${{ steps.artifact.outputs.package_path }}
+        run: npm publish "$PACKAGE_PATH" --ignore-scripts --access public
 
       - name: Verify the npm publication
         run: |
@@ -402,7 +404,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
-          path: ${{ runner.temp }}/release-artifacts
+          path: ${{ env.ARTIFACT_DIR }}
           digest-mismatch: error
 
       - name: Verify the release artifact
@@ -438,7 +440,7 @@ jobs:
       - name: Attest the release archive
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/release-artifacts/secreteffects-${{ needs.prepare.outputs.version }}-node.tar.gz
+          subject-path: ${{ env.ARTIFACT_DIR }}/secreteffects-${{ needs.prepare.outputs.version }}-node.tar.gz
 
       - name: Create the GitHub Release
         env:
