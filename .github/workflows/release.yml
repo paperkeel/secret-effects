@@ -337,13 +337,28 @@ jobs:
           if (metadata.dist?.integrity !== process.env.NPM_INTEGRITY) {
             throw new Error("The published npm package has different bytes.");
           }
-          const attestationsResponse = await fetch(metadata.dist.attestations.url, {
-            signal: AbortSignal.timeout(15_000),
-          });
-          if (!attestationsResponse.ok) {
-            throw new Error(`The npm attestation registry returned HTTP ${attestationsResponse.status}.`);
+          let attestations;
+          for (let attempt = 1; attempt <= 12; attempt++) {
+            const response = await fetch(metadata.dist.attestations.url, {
+              signal: AbortSignal.timeout(15_000),
+            });
+            if (response.ok) {
+              attestations = await response.json();
+              if (
+                attestations.attestations?.some(
+                  (item) => item.predicateType === "https://slsa.dev/provenance/v1",
+                )
+              ) {
+                break;
+              }
+            } else if (response.status !== 404) {
+              throw new Error(`The npm attestation registry returned HTTP ${response.status}.`);
+            }
+            if (attempt === 12) {
+              throw new Error("The npm provenance did not become available.");
+            }
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
           }
-          const attestations = await attestationsResponse.json();
           const provenance = attestations.attestations?.find(
             (item) => item.predicateType === "https://slsa.dev/provenance/v1",
           );
