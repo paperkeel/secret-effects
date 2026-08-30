@@ -55,11 +55,18 @@ const releaseWorkflow = readFileSync(
 );
 const releaseDocument = parse(releaseWorkflow);
 const releaseTriggers = releaseDocument?.on;
-const workflowRunBranches = releaseTriggers?.workflow_run?.branches;
+const releaseBranches = releaseTriggers?.push?.branches;
+const publishJob = releaseDocument?.jobs?.["publish-npm"];
 if (releaseWorkflow.includes("SECRET_EFFECTS_KEY")) {
 	throw new Error(
 		"The release workflow must use only manual bootstrap credentials.",
 	);
+}
+if (
+	releaseWorkflow.includes("NPM_TOKEN") ||
+	releaseWorkflow.includes("NODE_AUTH_TOKEN")
+) {
+	throw new Error("The release workflow must use npm Trusted Publishing.");
 }
 if (
 	!releaseWorkflow.includes(
@@ -69,13 +76,27 @@ if (
 	throw new Error("Only the canonical repository can publish the npm client.");
 }
 if (
-	!Array.isArray(workflowRunBranches) ||
-	!workflowRunBranches.includes("master") ||
+	!Array.isArray(releaseBranches) ||
+	!releaseBranches.includes("master") ||
 	releaseTriggers?.push?.tags !== undefined
 ) {
+	throw new Error("The release workflow must release each master push.");
+}
+if (
+	publishJob?.["runs-on"] !== "ubuntu-24.04" ||
+	publishJob?.environment !== "release" ||
+	publishJob?.permissions?.["id-token"] !== "write"
+) {
 	throw new Error(
-		"The release workflow must promote successful master CI runs.",
+		"The npm publish job must use GitHub-hosted Trusted Publishing.",
 	);
+}
+for (const jobName of ["prepare", "finalize"]) {
+	if (
+		!releaseDocument?.jobs?.[jobName]?.["runs-on"]?.startsWith("blacksmith-")
+	) {
+		throw new Error(`${jobName} must use a Blacksmith runner.`);
+	}
 }
 
 process.stdout.write("Bootstrap boundary validation passed.\n");

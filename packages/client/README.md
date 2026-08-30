@@ -13,7 +13,7 @@ Effects. It combines these functions:
 Install only this package:
 
 ```sh
-pnpm add @paperkeel/secret-effects-client@0.2.1
+pnpm add @paperkeel/secret-effects-client@0.2.2
 ```
 
 Paperkeel publishes this package from the canonical Secret Effects repository.

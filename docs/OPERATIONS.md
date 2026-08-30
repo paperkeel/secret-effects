@@ -49,15 +49,60 @@ pnpm run deploy
 Alchemy owns D1, R2, Queue, Worker, cache, and Durable Object bindings. Production
 resources use retain protection and adopt existing named resources.
 
-In the canonical repository, each successful `master` CI run is a complete
-release. The release workflow checks and builds the exact commit. It deploys the
-commit, checks the commit from `/health`, publishes the matching npm package,
-creates a signed version tag, and creates the GitHub release.
+In the canonical repository, each `master` push starts a complete release. The
+release workflow checks and builds the exact commit on Blacksmith. It deploys
+the commit and checks the commit from `/health`.
+
+Blacksmith packs and tests the npm package. A GitHub-hosted runner publishes
+that package with npm Trusted Publishing. Blacksmith then creates the signed
+version tag, attests the command archive, and creates the GitHub release.
 
 Increment the root, API, command interface, client, cryptography, and protocol
-versions before each canonical merge. The workflow rejects a version that
-belongs to a different commit. GitHub queues up to 100 release runs and does not
-replace an earlier pending `master` release.
+versions before each canonical merge. The workflow rejects a package with
+different bytes or source provenance. GitHub queues up to 100 release runs. It
+does not replace an earlier pending `master` release.
+
+## npm Trusted Publishing
+
+npm requires a package to exist before it can have a trusted publisher. Publish
+`@paperkeel/secret-effects-client@0.2.1` once from the signed `v0.2.1` tag. Use
+an interactive npm session with two-factor authentication. Verify the tag and
+package bytes before you publish. This first publication is the only release
+without Trusted Publishing provenance.
+
+Configure one npm trusted publisher for
+`@paperkeel/secret-effects-client`:
+
+| Name         | Value            |
+| ------------ | ---------------- |
+| Provider     | GitHub Actions   |
+| Organization | `paperkeel`      |
+| Repository   | `secret-effects` |
+| Workflow     | `release.yml`    |
+| Environment  | `release`        |
+| Permission   | `npm publish`    |
+
+Configure the publisher with npm 11.15.0 or later:
+
+```sh
+npm trust github @paperkeel/secret-effects-client \
+  --repo paperkeel/secret-effects \
+  --file release.yml \
+  --env release \
+  --allow-publish
+```
+
+The npm publish job uses a GitHub-hosted runner because npm does not accept
+OIDC claims from self-hosted runners. The job receives the immutable package
+artifact from Blacksmith. It does not receive an npm token.
+
+The job checks the artifact digest, file checksums, package integrity, source
+commit, workflow path, repository, and hosted-runner identity. npm adds the
+SLSA provenance during publication.
+
+After the first trusted publication, configure npm to require two-factor
+authentication and reject traditional publishing tokens. Remove `NPM_TOKEN`
+from the GitHub release environment.
 
 ## Bootstrap
 
@@ -157,7 +202,6 @@ these values manually in GitHub:
 - `SECRET_EFFECTS_ISSUER_PRIVATE_KEY`
 - `SECRET_EFFECTS_GLOBAL_ADMIN_TOKEN`
 - `SENTRY_DSN`, when Sentry is active
-- `NPM_TOKEN`, only in the canonical Paperkeel release environment
 - `RELEASE_SIGNING_PRIVATE_KEY`, only in the canonical Paperkeel release
   environment
 
@@ -167,9 +211,9 @@ bindings into Cloudflare. Do not configure `SECRET_EFFECTS_KEY` for this
 repository.
 
 Forks and deployment copies do not publish the client package or create
-Paperkeel release tags. Their release workflow deploys the successful `master`
-commit and skips the canonical publication job. Applications install the
-canonical public package from Paperkeel.
+Paperkeel release tags. Their release workflow deploys their `master` commit
+and skips the canonical publication job. Applications install the canonical
+public package from Paperkeel.
 
 ## Runtime use
 
