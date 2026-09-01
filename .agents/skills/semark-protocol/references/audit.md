@@ -22,6 +22,21 @@ Do not infer semantic inaccuracy from wording alone. Read more evidence when a f
 depends on behavior.
 Use the implementation, related types, callers, and tests as evidence when necessary.
 
+## Map checker labels to audit categories
+
+When the repository uses `scripts/check-semark.mjs`, translate checker labels in the
+`[label]` field to audit categories:
+
+| Checker label | Audit categories |
+| --- | --- |
+| `readme-coverage` | `README_MISSING`, `README_NAME_INVALID` |
+| `file-signature` | `FILE_SIGNATURE_MISSING`, `FILE_SIGNATURE_POSITION`, `FILE_SIGNATURE_FORMAT`, `TSDOC_INVALID`, `TAG_ORDER_INVALID`, `LENGTH_LIMIT` |
+| `method-signature` | `METHOD_SIGNATURE_MISSING`, `METHOD_SIGNATURE_POSITION`, `METHOD_SIGNATURE_FORMAT`, `TSDOC_INVALID`, `TAG_ORDER_INVALID`, `LENGTH_LIMIT` |
+| `comment-policy` | `COMMENT_UNAUTHORIZED`, `DIRECTIVE_INVALID` |
+
+Use `SIGNATURE_STALE`, `NAME_AMBIGUOUS`, and `CONFIGURATION_INVALID` when the finding
+does not map to a checker label.
+
 ## Use stable finding categories
 
 - `README_MISSING`

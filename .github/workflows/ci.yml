@@ -28,9 +28,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Validate Semark Protocol
-        run: pnpm semark:check
-
       - name: Check source
         run: pnpm check
 

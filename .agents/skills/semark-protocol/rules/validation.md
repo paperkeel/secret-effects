@@ -19,12 +19,17 @@ the descriptions.
 Check unauthorized comments and invalid directives in every Semark installation. Apply
 this check to the configured source scope.
 
-If the repository uses Oxlint, load `@paperkeel/oxlint-plugin-semark` through
-`jsPlugins`. Enable `semark/valid` as an error.
+Repositories may validate Semark with a local script or with Oxlint.
 
-Use repository validation for requirements outside the Oxlint rule boundary. These
-requirements include README coverage, semantic accuracy, naming, exclusions, migration
-scope, and changed-code signature updates.
+This repository uses `scripts/check-semark.mjs` through `pnpm semark:check`.
+
+In other repositories that use Oxlint, you may optionally load
+`@paperkeel/oxlint-plugin-semark` through `jsPlugins` and enable `semark/valid` as an
+error. The Oxlint plugin is not required here.
+
+Use repository validation for requirements outside the local-script or Oxlint rule
+boundary. These requirements include README coverage, semantic accuracy, naming,
+exclusions, migration scope, and changed-code signature updates.
 
 Run the configured Semark check before you complete a change. Correct violations that
 your change causes.

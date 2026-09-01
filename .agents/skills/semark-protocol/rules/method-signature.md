@@ -1,16 +1,22 @@
 # Method signatures
 
-Add one method signature to each callable implementation with a stable source location.
-Coverage includes:
+Add one method signature to each callable implementation with a block body and a
+stable source location. Coverage includes:
 
 - function declarations
+- generator functions (`function*`)
 - class methods and constructors
 - accessors
-- named function expressions
-- arrow functions or function expressions assigned to a variable or property
+- named function expressions with a block body
+- arrow functions or function expressions assigned to a variable or property when the
+  body is a block
 - object methods
 - callbacks with a block body
-- hooks and exported callables
+- hooks and exported callables with a block body
+
+Expression-bodied arrow functions and single-expression callbacks are out of scope for
+`scripts/check-semark.mjs` in this repository. Repositories with a different validator
+may enforce them.
 
 Do not add a separate signature to an overload declaration without a body. The
 implementation signature documents the complete overload behavior. Exclude ambient
