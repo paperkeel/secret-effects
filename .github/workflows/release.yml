@@ -174,15 +174,34 @@ jobs:
           if (typeof attestationsUrl !== "string") {
             throw new Error(`${name}@${process.env.RELEASE_VERSION} has no npm provenance.`);
           }
-          const attestationsResponse = await fetch(attestationsUrl, {
-            signal: AbortSignal.timeout(15_000),
-          });
-          if (!attestationsResponse.ok) {
-            throw new Error(`The npm attestation registry returned HTTP ${attestationsResponse.status}.`);
+          let attestations;
+          for (let attempt = 1; attempt <= 12; attempt++) {
+            const response = await fetch(attestationsUrl, {
+              signal: AbortSignal.timeout(15_000),
+            });
+            if (response.ok) {
+              attestations = await response.json();
+              if (
+                attestations.attestations?.some(
+                  (item) =>
+                    item.predicateType === "https://slsa.dev/provenance/v1" &&
+                    item.bundle?.dsseEnvelope?.payload,
+                )
+              ) {
+                break;
+              }
+            } else if (response.status !== 404) {
+              throw new Error(`The npm attestation registry returned HTTP ${response.status}.`);
+            }
+            if (attempt === 12) {
+              throw new Error(`${name}@${process.env.RELEASE_VERSION} has no SLSA provenance.`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
           }
-          const attestations = await attestationsResponse.json();
           const provenance = attestations.attestations?.find(
-            (item) => item.predicateType === "https://slsa.dev/provenance/v1",
+            (item) =>
+              item.predicateType === "https://slsa.dev/provenance/v1" &&
+              item.bundle?.dsseEnvelope?.payload,
           );
           if (!provenance?.bundle?.dsseEnvelope?.payload) {
             throw new Error(`${name}@${process.env.RELEASE_VERSION} has no SLSA provenance.`);
@@ -346,7 +365,9 @@ jobs:
               attestations = await response.json();
               if (
                 attestations.attestations?.some(
-                  (item) => item.predicateType === "https://slsa.dev/provenance/v1",
+                  (item) =>
+                    item.predicateType === "https://slsa.dev/provenance/v1" &&
+                    item.bundle?.dsseEnvelope?.payload,
                 )
               ) {
                 break;
@@ -360,7 +381,9 @@ jobs:
             await new Promise((resolve) => setTimeout(resolve, 5_000));
           }
           const provenance = attestations.attestations?.find(
-            (item) => item.predicateType === "https://slsa.dev/provenance/v1",
+            (item) =>
+              item.predicateType === "https://slsa.dev/provenance/v1" &&
+              item.bundle?.dsseEnvelope?.payload,
           );
           if (!provenance?.bundle?.dsseEnvelope?.payload) {
             throw new Error("The npm package has no SLSA provenance.");
