@@ -45,6 +45,30 @@
 Load `semark-protocol` before you add or change TypeScript comments. Do not add
 or keep source comments except Semark file signatures, method signatures, and
 approved directives. Update an affected signature in the same change as the
-documented behavior. All applicable TypeScript files in the root, `apps/*`, and
-`packages/*` comply. Declaration-only `.d.ts` files use the protocol default
-exclusion. Run `pnpm semark:check` before you complete a change.
+documented behavior.
+
+### Validation
+
+Run `pnpm semark:check` before you complete a change. The command runs
+`scripts/check-semark.mjs`. `pnpm check` also runs Semark validation.
+
+This repository does not use `@paperkeel/oxlint-plugin-semark`. Oxlint handles
+general lint only.
+
+### Scope
+
+Apply Semark to top-level `.ts`, `.tsx`, `.mts`, and `.cts` files in the
+repository root, and to all TypeScript files under `apps/` and `packages/`.
+Declaration-only `.d.ts` files use the protocol default exclusion. TypeScript
+files in other root subdirectories, such as `scripts/`, are outside scope.
+
+### Audit output
+
+Map `pnpm semark:check` violations to audit categories as follows:
+
+| Checker label      | Audit category                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `readme-coverage`  | `README_MISSING` or `README_NAME_INVALID`                                             |
+| `file-signature`   | `FILE_SIGNATURE_MISSING`, `FILE_SIGNATURE_POSITION`, or `FILE_SIGNATURE_FORMAT`       |
+| `method-signature` | `METHOD_SIGNATURE_MISSING`, `METHOD_SIGNATURE_POSITION`, or `METHOD_SIGNATURE_FORMAT` |
+| `comment-policy`   | `COMMENT_UNAUTHORIZED` or `DIRECTIVE_INVALID`                                         |
