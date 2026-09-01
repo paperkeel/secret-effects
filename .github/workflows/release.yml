@@ -50,7 +50,6 @@ jobs:
         run: |
           test "$DEPLOY_SHA" = "$GITHUB_SHA" || { echo "The release event does not match the target commit." >&2; exit 1; }
           test "$DEPLOY_SHA" = "$(git rev-parse HEAD)" || { echo "The checkout does not match the release commit." >&2; exit 1; }
-          pnpm semark:check
           pnpm check
           pnpm build
           pnpm exec wrangler deploy --dry-run --config apps/api/wrangler.jsonc

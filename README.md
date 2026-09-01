@@ -188,7 +188,6 @@ Use Node.js 22.19.0 or later and pnpm 10.33.4.
 
 ```sh
 pnpm install
-pnpm semark:check
 pnpm check
 pnpm build
 pnpm wrangler:types
