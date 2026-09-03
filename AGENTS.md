@@ -47,4 +47,7 @@ or keep source comments except Semark file signatures, method signatures, and
 approved directives. Update an affected signature in the same change as the
 documented behavior. All applicable TypeScript files in the root, `apps/*`, and
 `packages/*` comply. Declaration-only `.d.ts` files use the protocol default
-exclusion. Run `pnpm semark:check` before you complete a change.
+exclusion. Validate Semark with `scripts/check-semark.mjs` through
+`pnpm semark:check`. This repository does not use the
+`@paperkeel/oxlint-plugin-semark` Oxlint plugin. Run `pnpm check` before each
+commit; it includes Semark validation.

@@ -73,9 +73,14 @@ existing comment.
 
 ## Add validation
 
-If the repository uses Oxlint, configure the GitHub Packages registry for the
-`@paperkeel` scope. Install `@paperkeel/oxlint-plugin-semark`. Load it through
-`jsPlugins` and enable `semark/valid` in the root Oxlint configuration.
+Add the smallest local tool that can check the configured scope, placement, tags,
+order, lengths, directives, and comment policy. This repository uses
+`scripts/check-semark.mjs` through `pnpm semark:check`.
+
+In other repositories that use Oxlint, you may optionally install
+`@paperkeel/oxlint-plugin-semark`. Configure the GitHub Packages registry for the
+`@paperkeel` scope. Load the plugin through `jsPlugins` and enable `semark/valid` in
+the root Oxlint configuration.
 
 Keep the scope-to-registry mapping in the project `.npmrc` file. Keep the token mapping
 in the trusted user-level `.npmrc` file. Do not commit a package token.
@@ -85,12 +90,9 @@ For GitHub Actions, grant the consuming repository read access under the package
 `actions/setup-node` with the GitHub Packages registry and `@paperkeel` scope. Pass
 the repository `GITHUB_TOKEN` as `NODE_AUTH_TOKEN` to the dependency installation step.
 
-Use a repository-local validator for requirements outside the Oxlint rule boundary.
-These requirements can include README coverage, migration scope, exclusions, naming,
-and changed-code signature updates.
-
-If the repository does not use Oxlint, add the smallest local tool that can check the
-configured scope, placement, tags, order, lengths, directives, and comment policy.
+Use a repository-local validator for requirements outside the local-script or Oxlint
+rule boundary. These requirements can include README coverage, migration scope,
+exclusions, naming, and changed-code signature updates.
 
 Make the check return a nonzero status for violations. Report the file, source location,
 and violation type.

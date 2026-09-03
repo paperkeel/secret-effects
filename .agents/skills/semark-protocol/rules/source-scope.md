@@ -1,7 +1,16 @@
 # Source scope
 
-Apply Semark to hand-authored `.ts`, `.tsx`, `.mts`, and `.cts` files. Include source
-files, tests, build scripts, and TypeScript configuration files in this scope.
+Apply Semark to hand-authored `.ts`, `.tsx`, `.mts`, and `.cts` files in the
+configured source roots.
+
+Default source roots:
+
+- repository root, non-recursive: only top-level TypeScript files
+- `apps/**`, recursive
+- `packages/**`, recursive
+
+Files in other directories, such as `scripts/`, are out of scope unless the
+repository configuration extends the roots.
 
 Exclude these files by default:
 
